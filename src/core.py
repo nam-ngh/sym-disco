@@ -154,28 +154,17 @@ class Map:
         Lgv = (self.d * v - self.K_hat @ v) / (self.eps * self.d)
         print('Laplacian residual:', np.abs(Lgv - self.lam[j] * v).max())
 
-    def compute_eigen_forms(self, mode=0, n_keep=48, thres=None, spectral=False):
+    def compute_eigen_forms(self, mode=0, n_keep=48, thres=None, spectral_energy=False):
 
         N = len(self.d)
         M = len(self.eigvals)
 
-        if spectral:
+        if spectral_energy:
             c = np.einsum('mi,mj,m,mk->ijk', self.eigvecs, self.eigvecs, self.d, self.eigvecs)
             c0 = self.product_energy(c, 0)
             c1 = self.product_energy(c, 1)
             c2 = self.product_energy(c, 2)
         else:
-            # c0 = np.einsum('mi,mj,mk,ml,m->ijkl', 
-            #     self.eigvecs, self.eigvecs, self.eigvecs, self.eigvecs, self.d
-            # ) # full symmetric pointwise inner product
-
-            # Lsym = (np.diag(self.d) - self.K_hat) / self.eps # symmetric
-            # Lg = Lsym / self.d[:, None] # the actual Laplacian, D^-1 Lsym
-            # LP = Lg @ Pij
-
-            # c1 = (Pij.T @ (Lsym @ Pij)).reshape(M,M,M,M)
-            # c2 = (LP.T @ (self.d[:, None] * LP)).reshape(M,M,M,M)
-
             Pij = (self.eigvecs[:, :, None] * self.eigvecs[:, None, :]).reshape(N, -1)
             LP  = (self.d[:, None] * Pij - self.K_hat @ Pij) / self.eps # = Lsym @ Pij
             LgP = LP / self.d[:, None] # = Lg @ Pij
@@ -323,7 +312,7 @@ def main():
     for j in JS:
         map.compute_eigen_basis(J=j, plot_spectrum=False)
         # map.plot_raw_eigbasis()
-        V_tilde = map.compute_eigen_forms(mode=3, n_keep=48, spectral=False)
+        V_tilde = map.compute_eigen_forms(mode=3, n_keep=48, spectral_energy=False)
         fields.append(V_tilde)
         map.plot_eigen_forms(V_tilde, scale=0.1,)
 
