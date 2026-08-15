@@ -8,8 +8,16 @@ from typing import List
 from scipy.sparse import csr_matrix
 
 class Map:
+    def __init__(self):
+        self.eps = None
+        self.data = None
+        self.eigvals = None
+        self.eigvecs = None
+        self.M = None
+        self.N = None
+        self.antisym_idx = None
 
-    def process_coordinates(self, data, epsilon=1.0, alpha=1.0, standardize=True, diagnose=False):
+    def diffmap_preprocess(self, data, epsilon=1.0, alpha=1.0, standardize=True, diagnose=False):
         if standardize:
             data = (data - data.mean(0)) / data.std(0)
 
@@ -17,6 +25,7 @@ class Map:
         pair_dist = squareform(pdist(data))
 
         if diagnose:
+            # plot to determine optimal epsilon
             D2 = pair_dist**2
             print(np.median(D2))
             eps_grid = np.logspace(-5, 2, 40)
@@ -30,10 +39,10 @@ class Map:
         q = np.sum(K_raw, axis=1)
 
         # normalised kernel & degree vec
-        K = K_raw / (np.outer(q ** alpha, q ** alpha))
+        K_hat = K_raw / (np.outer(q ** alpha, q ** alpha))
         del K_raw, q
-        self.K_hat = K
-        self.d = np.sum(K, axis=1)
+
+        d = np.sum(K_hat, axis=1)
 
         # sparsify? if yes also recompute d and Psym
         # K = np.where(K < K.max() * 1e-10, 0.0, K)
@@ -41,22 +50,35 @@ class Map:
         # self.K_hat = csr_matrix(K)
 
         # transition matrix
-        self.P_sym = K / (np.sqrt(self.d)[:, None]) / (np.sqrt(self.d)[None, :])
+        P_sym = K_hat / (np.sqrt(d)[:, None]) / (np.sqrt(d)[None, :])
 
         # ensure symmetry
-        self.P_sym = (self.P_sym + self.P_sym.T) / 2.0
-        self.data = data
-        self.eps = epsilon
-        print(f'P_sym shape: {self.P_sym.shape}, d shape: {self.d.shape}')
+        P_sym = (P_sym + P_sym.T) / 2.0
+        print(f'P_sym shape: {P_sym.shape}, d shape: {d.shape}')
 
-    def compute_eigen_basis(self, J=30, trunc_idx: List[int] = None, plot_spectrum=False):
+        self.eps = epsilon
+        self.data = data
+        self.N = data.shape[0]
+
+        return P_sym, d, K_hat
+
+    def compute_laplacian_spectrum(
+            self, P_sym, d, K_hat,
+            J=30, 
+            trunc_idx: List[int] = None, 
+            plot_spectrum=False
+    ):
+        '''
+        Computes the J eigenbasis of smooth functions on the manifold.
+        Sets self.eigvals, self.eigvecs, self.M.
+        '''
         eigvals, eigvecs_sym = eigsh(
-            self.P_sym, k=J, which='LA',
-            ncv=min(4*J, self.P_sym.shape[0])
+            P_sym, k=J, which='LA',
+            ncv=min(6*J, P_sym.shape[0]),
         )
 
         # convert back to eigenvectors of P
-        d_inv_sqrt = 1.0 / np.sqrt(self.d)
+        d_inv_sqrt = 1.0 / np.sqrt(d)
         eigvecs = eigvecs_sym * d_inv_sqrt[:, np.newaxis]
 
         if trunc_idx is not None:
@@ -66,25 +88,38 @@ class Map:
             self.eigvals = eigvals[-J:][::-1]
             self.eigvecs = eigvecs[:, -J:][:, ::-1]
 
-        v, mu = eigvecs_sym[:, 0], eigvals[0]
-        res = np.abs(self.P_sym @ v - mu * v).max()
-        print(f'eigsh basis residual (worst mode): {res:.2e}')
-        assert res < 1e-8, 'eigsh did not converge'
+        # convert to Laplacian eigenvalues
+        # self.eigvals = -np.log(np.clip(self.eigvals, 1e-16, None)) / self.eps
+        self.eigvals = (1 - self.eigvals)/self.eps
+        self.M = self.eigvals.shape[0]
 
-        # self.lam = -np.log(np.clip(self.eigvals, 1e-16, None)) / self.eps
-        self.lam = (1 - self.eigvals)/self.eps
+        # numerical checks
+        self.check_laplacian_res(K_hat, d)
+        eig_res = self.check_eigsh_res(eigvals, eigvecs_sym, P_sym)
+        assert eig_res.max() < 1e-8, 'eigsh did not converge'
 
         if plot_spectrum:
-            fig, ax = plt.subplots(figsize=(6, 3))
-            ax.plot(self.lam, 'o-')
+            _, ax = plt.subplots(figsize=(6, 3))
+            ax.plot(self.eigvals, 'o-')
             ax.set_xlabel('Index'); ax.set_ylabel('Eigenvalue')
             ax.set_title('Eigenvalue spectrum')
             plt.tight_layout()
             plt.show()
 
+    def check_eigsh_res(self, eigvals, eigvecs_sym, P_sym):
+        res = np.abs(P_sym @ eigvecs_sym - eigvals[None, :] * eigvecs_sym).max(axis=0)
+        print(f'eigsh residual: max {res.max():.2e} at mode {res.argmax()}')
+        return res
+
+    def check_laplacian_res(self, K_hat, d):
+        E = self.eigvecs
+        LgE = (d[:, None] * E - K_hat @ E) / (self.eps * d[:, None])
+        res = np.abs(LgE - self.eigvals[None, :] * E).max(axis=0)
+        print(f'Laplacian residual: max {res.max():.2e} at mode {res.argmax()}')
+
     def product_energy(self, c, p):
         # c shape (M, M, M)
-        return np.einsum('s,ijs,skl->ijkl', self.lam**p, c, c)
+        return np.einsum('s,ijs,skl->ijkl', self.eigvals**p, c, c)
     
     @staticmethod
     def flatten_antisym_4tensor(T, M):
@@ -99,6 +134,9 @@ class Map:
     
     @staticmethod
     def unflatten_antisym_1tensor(T, M, idx_i, idx_j):
+        '''
+        Converts a flattened antisymmetric tensor: (P,) -> (M, M).
+        '''
         T_unflat = np.zeros((M, M))
         T_unflat[idx_i, idx_j] = T
         T_unflat[idx_j, idx_i] = -T
@@ -148,31 +186,32 @@ class Map:
         test = np.abs(E_hat + np.einsum('ijlk->ijkl', E_hat)).max()
         print('E_hat antisym (3,4)? ', test, test < tol)
 
-    def check_laplacian_res(self,):
-        j = min(5, len(self.lam)-1)
-        v = self.eigvecs[:, j]
-        Lgv = (self.d * v - self.K_hat @ v) / (self.eps * self.d)
-        print('Laplacian residual:', np.abs(Lgv - self.lam[j] * v).max())
+    def compute_frame(
+            self, K_hat, d, 
+            n_keep=48, thres=None, 
+            spectral_energy=False
+    ):
+        '''
+        Computes the frame rep coefficients of eigen 1-forms of the Hodge Laplacian
+        Returns:
+            frame_coeffs: (P, n_keep)
+        '''
 
-    def compute_eigen_forms(self, mode=0, n_keep=48, thres=None, spectral_energy=False):
-
-        N = len(self.d)
-        M = len(self.eigvals)
+        M = self.M
 
         if spectral_energy:
-            c = np.einsum('mi,mj,m,mk->ijk', self.eigvecs, self.eigvecs, self.d, self.eigvecs)
+            c = np.einsum('mi,mj,m,mk->ijk', self.eigvecs, self.eigvecs, d, self.eigvecs)
             c0 = self.product_energy(c, 0)
             c1 = self.product_energy(c, 1)
             c2 = self.product_energy(c, 2)
         else:
-            Pij = (self.eigvecs[:, :, None] * self.eigvecs[:, None, :]).reshape(N, -1)
-            LP  = (self.d[:, None] * Pij - self.K_hat @ Pij) / self.eps # = Lsym @ Pij
-            LgP = LP / self.d[:, None] # = Lg @ Pij
+            Pij = (self.eigvecs[:, :, None] * self.eigvecs[:, None, :]).reshape(self.N, -1)
+            LP  = (d[:, None] * Pij - K_hat @ Pij) / self.eps # = Lsym @ Pij
+            LgP = LP / d[:, None] # = Lg @ Pij
 
-            c0 = (Pij.T @ (self.d[:, None] * Pij)).reshape(M,M,M,M)
+            c0 = (Pij.T @ (d[:, None] * Pij)).reshape(M,M,M,M)
             c1  = (Pij.T @ LP).reshape(M,M,M,M)
-            c2  = (LgP.T @ (self.d[:, None] * LgP)).reshape(M,M,M,M)
-            self.check_laplacian_res()
+            c2  = (LgP.T @ (d[:, None] * LgP)).reshape(M,M,M,M)
 
         self.check_c1c2(c1, c2)
         # (i,j,k,l) -> (i,l,j,k) - can transpose but this is cleaner
@@ -183,8 +222,8 @@ class Map:
         c2_ikjl = np.einsum('ikjl->ijkl', c2)
 
         # We need to broadcast lambda_j (axis 1) and lambda_l (axis 3)
-        lam_j = self.lam[np.newaxis, :, np.newaxis, np.newaxis]  # shape (1, M, 1, 1)
-        lam_l = self.lam[np.newaxis, np.newaxis, np.newaxis, :]  # shape (1, 1, 1, M)
+        lam_j = self.eigvals[np.newaxis, :, np.newaxis, np.newaxis]  # shape (1, M, 1, 1)
+        lam_l = self.eigvals[np.newaxis, np.newaxis, np.newaxis, :]  # shape (1, 1, 1, M)
 
         # Hodge Grammian G (shape: M, M, M, M)
         G = ((lam_j + lam_l) * c0 - c1_ikjl) / 2.0
@@ -194,7 +233,7 @@ class Map:
         G_hat = G + G_jilk - G_jikl - G_ijlk
         self.check_G(G)
 
-        lam = self.lam
+        lam = self.eigvals
         lam_i = lam[:, None, None, None]
         lam_j = lam[None, :, None, None]
         lam_k = lam[None, None, :, None]
@@ -207,10 +246,11 @@ class Map:
         self.check_E_hat(E_hat)
         H = G - np.einsum('jikl->ijkl', G)
 
-        G_hat_flat, (idx_i, idx_j) = self.flatten_antisym_4tensor(G_hat, M)
+        G_hat_flat, idxs = self.flatten_antisym_4tensor(G_hat, M)
         E_hat_flat, _ = self.flatten_antisym_4tensor(E_hat, M)
         print(f'G_hat_flat shape: {G_hat_flat.shape},')
         print(f'H shape: {H.shape}')
+        self.antisym_idx = idxs
         self.check_G_hat_flat(G_hat_flat)
 
         G1_flat = G_hat_flat + E_hat_flat
@@ -226,7 +266,7 @@ class Map:
             print(f'Keeping {np.sum(keep)} out of {len(h)} eigenvectors with threshold {thres}')
             U_tilde = U[:, keep]
         else:
-            U_tilde = U[:, :n_keep]
+            U_tilde = U[:, :n_keep] # (P, n_keep)
         print(f'Shape U_tilde: {U_tilde.shape}')
 
         L = U_tilde.T @ E_hat_flat @ U_tilde
@@ -235,22 +275,36 @@ class Map:
         B = (B + B.T) / 2.0
         print(f'Shape L: {L.shape}, Shape B: {B.shape}')
 
-        nu, a = sp.linalg.eigh(L, B)
+        nu, a = sp.linalg.eigh(L, B) # (n_keep,), (n_keep, n_keep)
         print(f'Shape nu: {nu.shape}, Shape a: {a.shape}')
         print(f'nu spectrum: {nu[:8]}, {nu[-2:]}')
         print('nu nullspace dim:', np.sum(np.abs(nu) < 1e-6))
 
-        # operator rep of v
-        phi_coeff_all = U_tilde @ a # (keep.sum, P)
-        # select mode to visualize
-        phi_mode = phi_coeff_all[:, mode]
-        phi_mat = self.unflatten_antisym_1tensor(phi_mode, M, idx_i, idx_j) # (M, M)
-        V = np.einsum('ijkl,ij->kl', H, phi_mat / 2.0) # (M, M)
+        # coefficients for all basis eigen 1-forms
+        frame_coeffs = U_tilde @ a # (P, n_keep)
+        print(f'Eigen frame coefficients shape: {frame_coeffs.shape}')
 
-        D = diags(self.d)
-        X_hat = self.data.T @ D @ self.eigvecs # (dim, N) @ (N, N) @ (N, M) -> (dim, M)
+        return frame_coeffs, H
 
-        V_tilde = X_hat @ V.T @ self.eigvecs.T # (dim, M) @ (M, M) @ (M, N) -> (dim, N)
+    def form_to_vec(self, frame_coeffs, H, d, mode=0):
+        # select mode to convert
+        ef_mode = frame_coeffs[:, mode]
+
+        # unflatten to antisymmetric matrix
+        idx_i, idx_j = self.antisym_idx
+        ef_mat = self.unflatten_antisym_1tensor(ef_mode, self.M, idx_i, idx_j) # (M, M)
+
+        # Sharp to vector field
+        V = np.einsum('ijkl,ij->kl', H, ef_mat / 2.0) # (M, M)
+
+        # Fourier transform coordinate functions to spectral space
+        # (dim, N) @ (N, M) -> (dim, M)
+        X_hat = (self.data * d[:, None]).T @ self.eigvecs
+
+        # Apply vector field to coord functions - the pushforward
+        # and inverse Fourier transform back to embedding space
+        # (dim, M) @ (M, M) @ (M, N) -> (dim, N)
+        V_tilde = X_hat @ V.T @ self.eigvecs.T
         
         print(f'Shape V_tilde: {V_tilde.shape}')
         return V_tilde
@@ -293,26 +347,32 @@ class Map:
         plt.tight_layout()
         plt.show()
 
-    def plot_raw_eigbasis(self,):
+    def plot_laplacian_eigenfuncs(self,):
         fig = plt.figure(figsize=(15,4))
         for n, j in enumerate([1, 5, 10, 19]):
             ax = fig.add_subplot(1, 4, n+1, projection='3d')
-            ax.scatter(self.data[:,0], self.data[:,1], self.data[:,2],
-                    c=self.eigvecs[:, j], cmap='RdBu', s=2)
+            ax.scatter(
+                self.data[:,0], self.data[:,1], self.data[:,2],
+                c=self.eigvecs[:, j], cmap='RdBu', s=2
+            )
             ax.set_title(f'phi_{j}')
         plt.show()
 
 def main():
+    # load data
     data = np.load('data/population.npy')
     print(data[:3])
+
+    # run algorithm
     map = Map()
-    map.process_coordinates(data, epsilon=0.01, alpha=1)
+    P_sym, d, K_hat = map.diffmap_preprocess(data, epsilon=0.01, alpha=1)
     JS = [36]
     fields = []
     for j in JS:
-        map.compute_eigen_basis(J=j, plot_spectrum=False)
-        # map.plot_raw_eigbasis()
-        V_tilde = map.compute_eigen_forms(mode=3, n_keep=48, spectral_energy=False)
+        map.compute_laplacian_spectrum(P_sym, d, K_hat, J=j,)
+        # map.plot_laplacian_eigenfuncs()
+        frame_coeffs, H = map.compute_frame(K_hat, d, n_keep=48)
+        V_tilde = map.form_to_vec(frame_coeffs, H, d, mode=36)
         fields.append(V_tilde)
         map.plot_eigen_forms(V_tilde, scale=0.1,)
 

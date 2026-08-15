@@ -21,16 +21,18 @@ class DataGenerator:
         Generate synthetic points on manifold F(x, u, u') = u' - au = 0
         Default 5 stacked trajectories of npts each, with different intial conditions u0
         '''
+        
+        u0_nudge = np.random.normal(0, 0.3/n_trajectories, n_trajectories)
         trajectories = []
 
-        for u0 in range(1, n_trajectories + 1):
+        for u0 in np.linspace(1.0, 10.0, n_trajectories) + u0_nudge:
             x = np.linspace(self.x_min, self.x_max, self.npts)
             points = np.zeros((self.npts, 3))
             points[:, 0] = x
             u = u0 * np.exp(a * x)
             dxu = a * u
-            noise_u   = np.random.uniform(-self.noise, self.noise, self.npts) * np.abs(u)
-            noise_dxu = np.random.uniform(-self.noise, self.noise, self.npts) * np.abs(dxu)
+            noise_u   = np.random.normal(0.0, self.noise * u.std(), self.npts)
+            noise_dxu = np.random.normal(0.0, self.noise * dxu.std(), self.npts)
             points[:, 1] = u + noise_u
             points[:, 2] = dxu + noise_dxu
             trajectories.append(points)
@@ -40,5 +42,5 @@ class DataGenerator:
         self._save(name='population')
 
 if __name__ == "__main__":
-    gen = DataGenerator(npts=72, x_max=3.0, noise=0.02)
-    gen.population_equation(n_trajectories=72)
+    gen = DataGenerator(npts=60, x_max=2.0, noise=0.02)
+    gen.population_equation(n_trajectories=100)
