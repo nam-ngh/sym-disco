@@ -4,8 +4,9 @@ import matplotlib.pyplot as plt
 from scipy.spatial.distance import pdist, squareform
 from scipy.sparse.linalg import eigsh
 from typing import List
+from scipy.signal import savgol_filter
 
-class Map:
+class SymSolver:
     def __init__(self):
         self.eps = None
         self.data = None
@@ -17,8 +18,13 @@ class Map:
         self.antisym_idx = None
         self.t_size = None
         self.n_trajectory = None
+        self.linsys_keep_mask = None
 
-    def diffmap_preprocess(self, data, trajectory_size, epsilon=1.0, alpha=1.0, standardize=True, diagnose=False):
+
+    ########################### Diffusion maps algorithm ###########################
+
+
+    def diffmap_preprocess(self, data, t_steps, epsilon=1.0, alpha=1.0, standardize=True, diagnose=False):
         '''
         Preprocess data by diffusion maps, returning objects no longer in coordinate space.
         '''
@@ -69,9 +75,33 @@ class Map:
         self.eps = epsilon
         self.data = data
         self.N = data.shape[0]
-        self.t_size = trajectory_size
+        self.t_size = t_steps
 
         return P_sym, d, K_hat
+
+
+    ########################### Spectral basis construction for SEC ###########################
+
+
+    def check_eigsh_res(self, eigvals, eigvecs_sym, P_sym):
+            res = np.abs(P_sym @ eigvecs_sym - eigvals[None, :] * eigvecs_sym).max(axis=0)
+            print(f'eigsh residual: max {res.max():.2e} at mode {res.argmax()}')
+            return res
+    
+    def check_laplacian_res(self, K_hat, d):
+        E = self.eigvecs
+        LgE = (d[:, None] * E - K_hat @ E) / (self.eps * d[:, None])
+        res = np.abs(LgE - self.eigvals[None, :] * E).max(axis=0)
+        print(f'Laplacian residual: max {res.max():.2e} at mode {res.argmax()}')
+
+    def reconstruct_error(self, f, d, J, name: str=''):
+        '''
+        Relative error in reconstructing a coordinate function f from the
+        leading M eigenfunctions. Diagnostic for basis adequacy.
+        '''
+        phi = self.eigvecs[:, :J]
+        f_hat = phi.T @ (d * f)
+        print(f'{name} reconstruction error at J={J}: ', np.abs(phi @ f_hat - f).max() / np.linalg.norm(f - f.mean()))
 
     def compute_laplacian_spectrum(
             self, P_sym, d, K_hat,
@@ -119,25 +149,9 @@ class Map:
             plt.tight_layout()
             plt.show()
 
-    def check_eigsh_res(self, eigvals, eigvecs_sym, P_sym):
-        res = np.abs(P_sym @ eigvecs_sym - eigvals[None, :] * eigvecs_sym).max(axis=0)
-        print(f'eigsh residual: max {res.max():.2e} at mode {res.argmax()}')
-        return res
 
-    def check_laplacian_res(self, K_hat, d):
-        E = self.eigvecs
-        LgE = (d[:, None] * E - K_hat @ E) / (self.eps * d[:, None])
-        res = np.abs(LgE - self.eigvals[None, :] * E).max(axis=0)
-        print(f'Laplacian residual: max {res.max():.2e} at mode {res.argmax()}')
+    ########################### Spectral frame construction with SEC ###########################
 
-    def reconstruction_error(self, f, d, J):
-        '''
-        Relative error in reconstructing a coordinate function f from the
-        leading M eigenfunctions. Diagnostic for basis adequacy.
-        '''
-        phi = self.eigvecs[:, :J]
-        f_hat = phi.T @ (d * f)
-        print(f'Reconstruction Err J = {J}', np.abs(phi @ f_hat - f).max() / np.linalg.norm(f - f.mean()))
 
     def product_energy(self, c, p):
         # c shape (M, M, M)
@@ -210,13 +224,13 @@ class Map:
 
     def compute_frame(
             self, K_hat, d, 
-            n_keep=48, thres=None, 
+            n_frames=48, thres=None, 
             spectral_energy=False
     ):
         '''
         Computes the frame rep coefficients of eigen 1-forms of the Hodge Laplacian
         Returns:
-            frame_coeffs: (P, n_keep)
+            frame_coeffs: (P, n_frames)
         '''
 
         M = self.M
@@ -288,8 +302,8 @@ class Map:
             print(f'Keeping {np.sum(keep)} out of {len(h)} eigenvectors with threshold {thres}')
             U_tilde = U[:, keep]
         else:
-            U_tilde = U[:, :n_keep] # (P, n_keep)
-            self.n_frames = n_keep
+            U_tilde = U[:, :n_frames] # (P, n_frames)
+            self.n_frames = n_frames
             
         print(f'Shape U_tilde: {U_tilde.shape}')
 
@@ -299,32 +313,93 @@ class Map:
         B = (B + B.T) / 2.0
         print(f'Shape L: {L.shape}, Shape B: {B.shape}')
 
-        nu, a = sp.linalg.eigh(L, B) # (n_keep,), (n_keep, n_keep)
+        nu, a = sp.linalg.eigh(L, B) # (n_frames,), (n_frames, n_frames)
         print(f'Shape nu: {nu.shape}, Shape a: {a.shape}')
         print(f'nu spectrum: {nu[:8]}, {nu[-2:]}')
         print('nu nullspace dim:', np.sum(np.abs(nu) < 1e-6))
 
         # coefficients for all basis eigen 1-forms
-        frame_coeffs = U_tilde @ a # (P, n_keep)
+        frame_coeffs = U_tilde @ a # (P, n_frames)
         print(f'Eigen frame coefficients shape: {frame_coeffs.shape}')
 
         return frame_coeffs, H
 
-    def compute_contact_form_kernel(self, d):
-        '''
-        Computes operator rep of vector field W, at each point spanning ker(gamma) up to a scale factor.
-        Returns:
-            W_hat: (M, M)
-        '''
-        x = self.data[:, 0].reshape(-1, self.t_size) # (n_t, t_size)
-        self.n_trajectory = x.shape[0]
-        phi = self.eigvecs.reshape(-1, self.t_size, self.M) # (n_t, t_size, M)
-        dphi = np.stack(
-            [np.gradient(phi[t], x[t], axis=0) for t in range(phi.shape[0])]
-        )
-        dphi = dphi.reshape(-1, self.eigvecs.shape[1]) # (N, M)
+    def framecoeff_to_vec(self, frame_coeffs, H, d, mode=0):
+        # select mode to convert
+        ef_mode = frame_coeffs[:, mode]
+        idx_i, idx_j = self.antisym_idx
+        ef_mat = self.unflatten_antisym_1tensor(ef_mode, self.M, idx_i, idx_j)
+        V = self.sharp(H, ef_mat)
+        X_hat = self.fourier_tf(self.data, d)
+        return self.inv_fourier_pushfwd(X_hat, V)
 
-        return self.eigvecs.T @ (d[:, None] * dphi)
+    @staticmethod
+    def normalize_by_norm(field):
+        norm = np.linalg.norm(field, axis=0)
+        norm[norm == 0] = 1.0
+        return field / norm
+
+    @staticmethod
+    def normalize_by_percentile(field, percentile=75):
+        mags = np.linalg.norm(field, axis=0)
+        mag_scale = np.percentile(mags, percentile)
+        return field / mag_scale
+
+    @staticmethod
+    def normalize_by_mean(field):
+        mags = np.linalg.norm(field, axis=0)
+        mag_scale = np.mean(mags)
+        return field / mag_scale
+
+    def plot_laplacian_eigenfuncs(self, idxs: List = [0, 10, 20, 30]):
+        fig = plt.figure(figsize=(15,4))
+        for n, j in enumerate(idxs):
+            ax = fig.add_subplot(1, 4, n+1, projection='3d')
+            ax.scatter(
+                self.data[:,0], self.data[:,1], self.data[:,2],
+                c=self.eigvecs[:, j], cmap='RdBu', s=2
+            )
+            ax.set_title(f'{j}-th basis eigenfunction')
+        plt.show()
+        
+    def plot_vector_field(self, V, normalise=75, scale=1.0, x_scale=1.0, subsample: int=None, title: str=''):
+        fig = plt.figure(figsize=(7, 6))
+        ax = fig.add_subplot(111, projection='3d')
+
+        if type(normalise) == int:
+            V_plot = self.normalize_by_percentile(V, percentile=75)
+        elif normalise == 'mean':
+            V_plot = self.normalize_by_mean(V)
+        elif normalise == 'norm':
+            V_plot = self.normalize_by_norm(V)
+
+        X, Y, Z = self.data[:, 0], self.data[:, 1], self.data[:, 2]
+        U, V, W = V_plot[0]/x_scale, V_plot[1], V_plot[2] # arrow components at each point
+
+        if subsample:
+            idx = np.random.choice(len(X), subsample, replace=False)
+            # points
+            ax.scatter(X[idx], Y[idx], Z[idx], s=3, c='navy', alpha=0.8)
+            # arrows
+            ax.quiver(
+                X[idx], Y[idx], Z[idx], 
+                U[idx], V[idx], W[idx], 
+                length=scale, normalize=False, color='coral', arrow_length_ratio=0.05
+            )
+        else:
+            ax.scatter(X, Y, Z, s=3, c='navy', alpha=0.8)
+            ax.quiver(
+                X, Y, Z, U, V, W, 
+                length=scale, normalize=False, color='coral', arrow_length_ratio=0.05
+            )
+
+        ax.set_xlabel('x'); ax.set_ylabel('u'); ax.set_zlabel('dxu')
+        ax.set_box_aspect([np.ptp(X)*x_scale, np.ptp(Y), np.ptp(Z)])
+        ax.set_title(title)
+        plt.tight_layout()
+        plt.show()
+
+    ########################### SEC related operations ###########################
 
     def lie_bracket(self, V, W):
         '''
@@ -358,7 +433,72 @@ class Map:
         '''
         return np.einsum('ijkl,ij->kl', H, form_coeff / 2.0)
 
-    def solve(self, frame_coeffs, H, d, W):
+
+    ########################### Determining null-space problem ###########################
+
+
+    def compute_contact_form_kernel(self, d, sav_golay: bool=True):
+            '''
+            Computes operator rep of vector field W, at each point spanning ker(gamma) up to a scale factor.
+            Returns:
+                W_hat: (M, M)
+            '''
+            x = self.data[:, 0].reshape(-1, self.t_size) # (n_t, t_size)
+            self.n_trajectory = x.shape[0]
+            phi = self.eigvecs.reshape(-1, self.t_size, self.M) # (n_t, t_size, M)
+    
+            if sav_golay:
+                dx = np.diff(x, axis=1).mean()
+                dphi = savgol_filter(
+                    phi, window_length=11, polyorder=3,
+                    deriv=1, delta=dx, axis=1
+                ) # along t_size
+            else:
+                dphi = np.stack(
+                    [np.gradient(phi[t], x[t], axis=0)for t in range(phi.shape[0])]
+                )
+    
+            dphi = dphi.reshape(-1, self.eigvecs.shape[1]) # (N, M)
+            return self.eigvecs.T @ (d[:, None] * dphi)
+
+    def check_W_op(self, W_op, x, u, ux, u_hat, x_hat,):
+        # raw computes
+        mask = self.linsys_keep_mask
+        xr = x.reshape(-1, self.t_size)
+        ur = u.reshape(-1, self.t_size)
+        du = np.stack([np.gradient(ur[t], xr[t]) for t in range(ur.shape[0])]).ravel()
+        r = (du/ux)[mask]
+        Wx = self.inv_fourier_pushfwd(x_hat, W_op).ravel()
+        # Wu vs ux res
+        res = self.inv_fourier_pushfwd(u_hat, W_op).ravel() - ux
+
+        print('du/ux med & std: ', np.median(r), r.std())
+        print('raw du/dx vs ux near 0?', np.linalg.norm(du - ux) / np.linalg.norm(ux))
+        print('masked du/dx vs ux near 0?', np.linalg.norm((du-ux)[mask]) / np.linalg.norm(ux[mask]))
+        print('u recon res near 0?', np.linalg.norm(self.eigvecs @ u_hat.ravel() - u) / np.linalg.norm(u - u.mean()))
+        print('x recon res near 0?', np.linalg.norm(self.eigvecs @ x_hat.ravel() - x) / np.linalg.norm(x - x.mean()))
+        print('Wx masked around 1?', Wx[mask].mean(), Wx[mask].std())
+        print('Wx all around 1?', Wx.mean(), Wx.std())
+        print('Wu masked res around 0?', np.linalg.norm(res[mask]) / np.linalg.norm(ux[mask]))
+        print('Wu all res around 0?', np.linalg.norm(res) / np.linalg.norm(ux))
+            
+    def check_symmetry_residual(self, V_op, W_op, d):
+        x = self.data[:, 0]
+        u = self.data[:, 1]
+        ux = self.data[:, 2]
+        u_hat = self.fourier_tf(u, d)
+        x_hat = self.fourier_tf(x, d)
+        Z = self.lie_bracket(V_op, W_op)
+        Zu = self.inv_fourier_pushfwd(u_hat, Z).ravel()
+        Zx = self.inv_fourier_pushfwd(x_hat, Z).ravel()
+
+        mask = self.linsys_keep_mask
+        res = (Zu - ux * Zx)[mask]
+        Znorm = np.sqrt(Zu**2 + Zx**2)[mask]
+
+        return np.linalg.norm(res) / np.linalg.norm(Znorm)
+
+    def solve(self, frame_coeffs, H, d, W_op, max_kernel_dim: int=6, svd_thres: float=None, run_num_checks: bool=False):
         idx_i, idx_j = self.antisym_idx
         x = self.data[:, 0]
         u = self.data[:, 1]
@@ -366,25 +506,19 @@ class Map:
         u_hat = self.fourier_tf(u, d)
         x_hat = self.fourier_tf(x, d)
 
-        # mask to discard start and ends of trajectories, where derivative is unstable
+        # mask to discard start and ends of trajectories, where dphi is unstable
         mask = np.ones((self.n_trajectory, self.t_size), bool)
-        mask[:, :3] = mask[:, -3:] = False
+        mask[:, :5] = mask[:, -5:] = False
         mask = mask.ravel()
+        self.linsys_keep_mask = mask
 
         # numerical checks
-        xr = self.data[:, 0].reshape(-1, self.t_size)
-        ur = self.data[:, 1].reshape(-1, self.t_size)
-        du = np.stack([np.gradient(ur[t], xr[t]) for t in range(ur.shape[0])]).ravel()
-        print('raw du/dx vs ux:', np.linalg.norm(du - ux) / np.linalg.norm(ux))
-        print('masked du/dx vs ux', np.linalg.norm((du-ux)[mask]) / np.linalg.norm(ux[mask]))
-        print('u recon res:', np.linalg.norm(self.eigvecs @ u_hat.ravel() - u) / np.linalg.norm(u - u.mean()))
-        print('x recon res:', np.linalg.norm(self.eigvecs @ x_hat.ravel() - x) / np.linalg.norm(x - x.mean()))
-        Wx = self.inv_fourier_pushfwd(x_hat, W).ravel()
-        print('Wx masked', Wx[mask].mean(), Wx[mask].std())
-        print('Wx all', Wx.mean(), Wx.std())
-        res = self.inv_fourier_pushfwd(u_hat, W).ravel() - ux
-        print('Wu masked:', np.linalg.norm(res[mask]) / np.linalg.norm(ux[mask]))
-        print('Wu all:   ', np.linalg.norm(res) / np.linalg.norm(ux))
+        if run_num_checks:
+            self.check_W_op(W_op, x, u, ux, u_hat, x_hat)
+        else:
+            # minimum W_op quality check
+            Wx = self.inv_fourier_pushfwd(x_hat, W_op).ravel()
+            print('Wx around 1?', Wx[mask].mean(), Wx[mask].std())
 
         cols = []
         Vks = []
@@ -392,7 +526,7 @@ class Map:
             rho_k_flat = frame_coeffs[:, k]
             rho_k = self.unflatten_antisym_1tensor(rho_k_flat, self.M, idx_i, idx_j) # (M, M)
             Vk = self.sharp(H, rho_k) # (M, M)
-            Zk = self.lie_bracket(Vk, W)
+            Zk = self.lie_bracket(Vk, W_op)
             Zku = self.inv_fourier_pushfwd(u_hat, Zk)
             Zkx = self.inv_fourier_pushfwd(x_hat, Zk)
             col = (Zku - ux * Zkx).ravel()
@@ -401,7 +535,7 @@ class Map:
 
         A = np.column_stack(cols)[mask]
 
-        def is_trivial(c, tol=1e-2):
+        def is_trivial(c, tol=1e-3):
             V = sum(ck * Vk for ck, Vk in zip(c, Vks))
             Vu = self.inv_fourier_pushfwd(u_hat, V).ravel()
             Vx = self.inv_fourier_pushfwd(x_hat, V).ravel()
@@ -412,112 +546,29 @@ class Map:
         ### SOLVE ###
         _, S, Vt = np.linalg.svd(A, full_matrices=False)
         singular_values_scaled = S/S[0]
-        print(singular_values_scaled[-10:])
-        null_space_idx = np.where(singular_values_scaled < 1e-2)[0]
-        if len(null_space_idx) == 0:
-            raise ValueError('No non-trivial null space found.')
-        nontrivial = [Vt[i] for i in null_space_idx if not is_trivial(Vt[i])]
-        trivial_idx = [i for i in null_space_idx if is_trivial(Vt[i])]
-        print(f'null dim {len(null_space_idx)}, trivial {len(trivial_idx)}')
-        return nontrivial, Vks
-            
-    def form_to_vec(self, frame_coeffs, H, d, mode=0):
-        # select mode to convert
-        ef_mode = frame_coeffs[:, mode]
-        idx_i, idx_j = self.antisym_idx
-        ef_mat = self.unflatten_antisym_1tensor(ef_mode, self.M, idx_i, idx_j)
-        V = self.sharp(H, ef_mat)
-        X_hat = self.fourier_tf(self.data, d)
-        return self.inv_fourier_pushfwd(X_hat, V)
 
-    @staticmethod
-    def normalize_by_norm(field):
-        norm = np.linalg.norm(field, axis=0)
-        norm[norm == 0] = 1.0
-        return field / norm
+        # kernel analysis
+        if svd_thres:
+            kernel_idx = np.where(singular_values_scaled < svd_thres)[0]
+            if len(kernel_idx) == 0:
+                raise ValueError('No non-trivial null space found. Try raising svd_thres?')
+        else:
+            kernel_idx = [len(S) - k for k in range(1, max_kernel_dim + 1)]
 
-    @staticmethod
-    def normalize_by_percentile(field, percentile=75):
-        mags = np.linalg.norm(field, axis=0)
-        mag_scale = np.percentile(mags, percentile)
-        return field / mag_scale
+        print('Singular values range top - kernel', S[:2], S[kernel_idx])
+        print('Singular values range top - kernel scaled ', singular_values_scaled[:2], singular_values_scaled[kernel_idx])
 
-    @staticmethod
-    def normalize_by_mean(field):
-        mags = np.linalg.norm(field, axis=0)
-        mag_scale = np.mean(mags)
-        return field / mag_scale
-        
-    def plot_vector_field(self, V, normalise=75, scale=1.0, x_scale=1.0):
-        fig = plt.figure(figsize=(7, 6))
-        ax = fig.add_subplot(111, projection='3d')
+        nontrivials = []
+        trivials = []
+        for i in kernel_idx:
+            params = Vt[i]
+            V_op = sum(ck * Vk for ck, Vk in zip(params, Vks))
+            res = self.check_symmetry_residual(V_op, W_op, d)
+            print(f'{len(S)-(i+1)}-th kernel dimension determining equation residual: {res}')
+            if not is_trivial(params):
+                nontrivials.append(params)
+            else:
+                trivials.append(params)
 
-        if type(normalise) == int:
-            V_plot = self.normalize_by_percentile(V, percentile=75)
-        elif normalise == 'mean':
-            V_plot = self.normalize_by_mean(V)
-        elif normalise == 'norm':
-            V_plot = self.normalize_by_norm(V)
-
-        X, Y, Z = self.data[:, 0], self.data[:, 1], self.data[:, 2]
-        U, V, W = V_plot[0]/x_scale, V_plot[1], V_plot[2] # arrow components at each point
-        
-        # points, faint, for context
-        ax.scatter(X, Y, Z, s=3, c='navy', alpha=0.8)
-
-        # arrows
-        ax.quiver(X, Y, Z, U, V, W, length=scale, normalize=False, color='coral', arrow_length_ratio=0.05)
-
-        ax.set_xlabel('x'); ax.set_ylabel('u'); ax.set_zlabel('dxu')
-        ax.set_box_aspect([np.ptp(X)*x_scale, np.ptp(Y), np.ptp(Z)])
-        ax.set_title(f'Tangent Vector Field')
-        plt.tight_layout()
-        plt.show()
-
-    def plot_laplacian_eigenfuncs(self,):
-        fig = plt.figure(figsize=(15,4))
-        for n, j in enumerate([1, 5, 10, 19]):
-            ax = fig.add_subplot(1, 4, n+1, projection='3d')
-            ax.scatter(
-                self.data[:,0], self.data[:,1], self.data[:,2],
-                c=self.eigvecs[:, j], cmap='RdBu', s=2
-            )
-            ax.set_title(f'phi_{j}')
-        plt.show()
-
-def main(plot_laplacian_spectrum=False, plot_eigenform=False, plot_W=False, solve=False):
-    # load data
-    data = np.load('data/population.npy')
-    print(data[:3])
-
-    # run algorithm
-    map = Map()
-    P_sym, d, K_hat = map.diffmap_preprocess(data, trajectory_size=60, epsilon=0.01, alpha=1)
-    map.compute_laplacian_spectrum(P_sym, d, K_hat, J=36,)
-    map.reconstruction_error(map.data[:, 0], d, 36)
-
-    if plot_laplacian_spectrum:
-        map.plot_laplacian_eigenfuncs()
-
-    frame_coeffs, H = map.compute_frame(K_hat, d, n_keep=48)
-    W = map.compute_contact_form_kernel(d)
-
-    if plot_eigenform:
-        V_tilde = map.form_to_vec(frame_coeffs, H, d, mode=36)
-        map.plot_vector_field(V_tilde, scale=0.1,)
-
-    if plot_W:
-        X_hat = map.fourier_tf(map.data, d)
-        W_arrows = map.inv_fourier_pushfwd(X_hat, W)
-        map.plot_vector_field(W_arrows, scale=0.1)
-
-    if solve:
-        kernel, Vks = map.solve(frame_coeffs, H, d, W)
-        params = kernel[0] # can be linear combo
-        V_op = sum(ck * Vk for ck, Vk in zip(params, Vks))
-        X_hat = map.fourier_tf(map.data, d)
-        V = map.inv_fourier_pushfwd(X_hat, V_op)
-        map.plot_vector_field(V, scale=0.1)
-
-if __name__ == "__main__":
-    main(plot_eigenform=True, solve=True)
+        print(f'null dim {len(kernel_idx)}, non-trivial {len(nontrivials)}')
+        return nontrivials, Vks

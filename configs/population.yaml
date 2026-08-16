@@ -1,0 +1,32 @@
+equation: "population"
+
+data:
+  n_trajectories: 100
+  t_steps: 60
+  x_min: 0.0
+  x_max: 2.0
+  u0_min: 1.0
+  u0_max: 5.0
+  noise: 0.02
+
+solver:
+  # diff maps
+  epsilon: 0.01
+  alpha: 1
+
+  # 0-laplacian spectral basis
+  J: 36
+
+  # 1-laplacian spectral frames
+  n_frames: 48
+  plot_frame_no: 36
+  plot_frame_vec_scale: 0.1
+
+  # contact form kernel vector field
+  plot_W_vec_scale: 0.1
+
+  # linear system
+  max_kernel_dim: 2
+  plot_kernel_dim: 1
+  plot_sym_vec_scale: 0.2 
+  plot_sym_subsample: 3000
