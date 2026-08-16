@@ -84,9 +84,9 @@ class SymSolver:
 
 
     def check_eigsh_res(self, eigvals, eigvecs_sym, P_sym):
-            res = np.abs(P_sym @ eigvecs_sym - eigvals[None, :] * eigvecs_sym).max(axis=0)
-            print(f'eigsh residual: max {res.max():.2e} at mode {res.argmax()}')
-            return res
+        res = np.abs(P_sym @ eigvecs_sym - eigvals[None, :] * eigvecs_sym).max(axis=0)
+        print(f'eigsh residual: max {res.max():.2e} at mode {res.argmax()}')
+        return res
     
     def check_laplacian_res(self, K_hat, d):
         E = self.eigvecs
@@ -367,7 +367,7 @@ class SymSolver:
         ax = fig.add_subplot(111, projection='3d')
 
         if type(normalise) == int:
-            V_plot = self.normalize_by_percentile(V, percentile=75)
+            V_plot = self.normalize_by_percentile(V, percentile=normalise)
         elif normalise == 'mean':
             V_plot = self.normalize_by_mean(V)
         elif normalise == 'norm':
