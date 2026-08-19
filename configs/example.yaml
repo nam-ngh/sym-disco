@@ -1,0 +1,42 @@
+# Example config file required by solver
+
+data:
+  n_trajectories: 100 # number of trajectories in data
+  t_steps: 60 # number of time steps in each trajectory
+
+solver:
+  
+  ##### KEY COMPUTATION PARAMETERS #####
+
+  eps_diagnose: False # plot to determine optimal epsilon for diff maps, recommended True for first run
+  epsilon: 0.01 # Tuned once per dataset by choosing a value in the centre of eps_diagnose
+  alpha: 1 # diffusion map normalisation constant. Can also be 0 or 0.5 but we need 1 to recover the laplace-beltrami operator.
+
+  J: 36 # number of eigenfunctions of the 0-laplacian to compute. # SEC depends entirely on this truncation. 
+  # Values above 20 should suffice. Above a certain J the eigen basis will just add noise and expensive computation
+  # Therefore J should be as small as possible a value that can accurately reconstruct functions
+  # (check Laplacian residual and reconstruction error to inform J choice)
+  n_frames: 48 # number of orthonormal basis eigen-1-forms of the 1-Laplacian to compute from an overcomplete frame 
+  # (spanning set of square-integrable vector fields).
+  # Try equal J first and increase if needed.
+  max_kernel_dim: 2 # dimension of the solution space of symmetries from SVD. Each row of V.T 
+  # (corresponding to smallest singular values) is a set of coefficient representing an unique symmetry vector field V.
+  # Linear combinations of these symmetries should also be symmetries: Any vector field in the span of the 
+  # recovered max_kernel_dim vector fields are also infinitesimal symmetry fields, trivial or not.
+  
+  ##### PLOTTING CONFIGS #####
+  # which eigenform to plot
+  plot_frame_no: 36 # any int in [0 to n_frames)
+  plot_frame_vec_scale: 0.1 # overall vector scale
+
+  # contact form kernel vector field
+  plot_W_vec_scale: 0.1 # overall vector scale
+
+  # linear system
+  plot_kernel_dim: 1 # which symmetry field to plot, any int in [0 - max_kernel_dim)
+  plot_sym_vec_scale: 0.2 # overall vector scale
+  plot_sym_subsample: 1000 # Number of points to sample from the manifold, reduce to increase clarity
+
+  ##### #####
+  # Function calls in the main algorithm does allow for more configurability directly in code
+  # though this set of configs should suffice for the solver to work with any general well-conditioned dataset
