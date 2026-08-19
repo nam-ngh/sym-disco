@@ -7,8 +7,11 @@ def load_config(path):
     with open(path) as f:
         return yaml.safe_load(f)
 
+def config_path(eq: str) -> str:
+    return f'configs/{eq}.yaml'
+
 def main(
-        path_config: str, 
+        eq: str, 
         plot_eigvals=False,
         plot_eigbasis=False, 
         plot_eigframe=False, 
@@ -16,11 +19,10 @@ def main(
         skip_solve=False,
 ):
     # load config
-    cfg = load_config(path_config)
+    cfg = load_config(config_path(eq))
 
     # load data
-    equation_name = cfg['equation']
-    data = np.load(f'data/{equation_name}.npy')
+    data = np.load(f'data/{eq}.npy')
     assert data.shape[0] == cfg['data']['n_trajectories'] * cfg['data']['t_steps'], 'Config expects different data shape'
     print('First row: ', data[0])
 
@@ -32,7 +34,8 @@ def main(
         data, 
         t_steps=cfg['data']['t_steps'], 
         epsilon=run_params['epsilon'], 
-        alpha=run_params['alpha']
+        alpha=run_params['alpha'],
+        diagnose=run_params['eps_diagnose']
     )
     solver.compute_laplacian_spectrum(
         P_sym, d, K_hat, 
@@ -74,13 +77,14 @@ def main(
         V = solver.inv_fourier_pushfwd(X_hat, V_op)
         solver.plot_vector_field(
             V, scale=run_params['plot_sym_vec_scale'], 
-            subsample=run_params['plot_sym_subsample'], 
+            subsample=run_params['plot_sym_subsample'],
+            normalise='norm',
             title='Internal Symmetry'
         )
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument('--path_config', default='configs/population.yaml')
+    p.add_argument('--eq', default='population')
     p.add_argument('--plot_eigvals', action='store_true')
     p.add_argument('--plot_eigbasis', action='store_true')
     p.add_argument('--plot_eigframe', action='store_true')

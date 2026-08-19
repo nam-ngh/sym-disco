@@ -1,21 +1,21 @@
-equation: "population"
-
+equation: constant_velocity
 data:
   n_trajectories: 100
-  t_steps: 60
+  t_steps: 100
   x_min: 0.0
-  x_max: 2.0
+  x_max: 3.0
   noise: 0.02
 
 gen_params:
-  a: 1.0
-  u0_min: 1.0
-  u0_max: 5.0
+  u0_min: -2.0
+  u0_max: 2.0
+  v0_min: 0.0
+  v0_max: 3.0
 
 solver:
   # diff maps
   eps_diagnose: False
-  epsilon: 0.01
+  epsilon: 0.1
   alpha: 1
 
   # 0-laplacian spectral basis
@@ -30,7 +30,7 @@ solver:
   plot_W_vec_scale: 0.1
 
   # linear system
-  max_kernel_dim: 2
-  plot_kernel_dim: 1
+  max_kernel_dim: 8
+  plot_kernel_dim: 0
   plot_sym_vec_scale: 0.2 
   plot_sym_subsample: 1000
