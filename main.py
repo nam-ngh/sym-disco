@@ -23,7 +23,10 @@ def main(
 
     # load data
     data = np.load(f'data/{eq}.npy')
-    assert data.shape[0] == cfg['data']['n_trajectories'] * cfg['data']['t_steps'], 'Config expects different data shape'
+    assert data.shape[0] % cfg['data']['t_steps'] == 0, \
+        f'{data.shape[0]} points not divisible by t_steps={cfg["data"]["t_steps"]}'
+    n_traj = data.shape[0] // cfg['data']['t_steps']
+    print(f'{n_traj} trajectories x {cfg["data"]["t_steps"]} steps')
     print('First row: ', data[0])
 
     # run algorithm
@@ -35,22 +38,23 @@ def main(
         t_steps=cfg['data']['t_steps'], 
         epsilon=run_params['epsilon'], 
         alpha=run_params['alpha'],
-        diagnose=run_params['eps_diagnose']
+        diagnose=run_params['eps_diagnose'],
+        knn=run_params['knn']        
     )
     solver.compute_laplacian_spectrum(
         P_sym, d, K_hat, 
-        J=run_params['J'], 
+        J=run_params['M'], 
         plot_spectrum=plot_eigvals
     )
-    solver.reconstruct_error(solver.data[:, 0], d, run_params['J'], name='x')
+    solver.reconstruct_error(solver.data[:, 0], d, run_params['M'], name='x')
     # coordinate functions projected to spectral space
     X_hat = solver.fourier_tf(solver.data, d)
 
     if plot_eigbasis:
         solver.plot_laplacian_eigenfuncs()
 
-    frame_coeffs, H = solver.compute_frame(K_hat, d, n_frames=run_params['n_frames'])
-    W_op = solver.compute_contact_form_kernel(d)
+    frame_coeffs, H = solver.compute_frame(K_hat, d, thres=run_params['frame_retain_thres'])
+    W_op = solver.compute_contact_form_kernel(d, run_checks=True,)
 
     if plot_eigframe:
         k = run_params['plot_frame_no']
@@ -81,6 +85,7 @@ def main(
             normalise='norm',
             title='Internal Symmetry'
         )
+        print('V, W similarity', np.abs(np.sum(V_op * W_op)) / (np.linalg.norm(V_op) * np.linalg.norm(W_op)))
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()

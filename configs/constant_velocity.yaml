@@ -1,31 +1,32 @@
 data: 
-  n_trajectories: 100
-  t_steps: 100
+  n_trajectories: 625
+  t_steps: 72
 
   ##### generation configs, blind to solver #####
   x_min: 0.0
   x_max: 3.0
-  noise: 0.02
+  noise: 0.01
 
 gen_params:
-  u0_min: -2.0
-  u0_max: 2.0
-  v0_min: 0.0
-  v0_max: 3.0
+  u0_min: 1.0
+  u0_max: 5.0
+  v0_min: 1.0
+  v0_max: 5.0
   ##############################################
 
 solver:
 
   # diff maps
-  eps_diagnose: False # recommended true on first run
-  epsilon: 0.1 # recommended val = mid point of linear section from eps_diagnose
+  eps_diagnose: True
+  epsilon: 4.0e-3
   alpha: 1
+  knn: 150
 
   # 0-laplacian spectral basis
-  J: 36
+  M: 45
 
   # 1-laplacian spectral frames
-  n_frames: 48
+  frame_retain_thres: 1.0e-4
   plot_frame_no: 36
   plot_frame_vec_scale: 0.1
 
@@ -33,7 +34,7 @@ solver:
   plot_W_vec_scale: 0.1
 
   # linear system
-  max_kernel_dim: 8
+  max_kernel_dim: 12
   plot_kernel_dim: 0
   plot_sym_vec_scale: 0.2 
   plot_sym_subsample: 1000

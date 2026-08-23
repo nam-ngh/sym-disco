@@ -1,25 +1,27 @@
 # Example config file required by solver
 
 data:
-  n_trajectories: 100 # number of trajectories in data
-  t_steps: 60 # number of time steps in each trajectory
+  n_trajectories: 484 # number of trajectories in data
+  t_steps: 64 # number of time steps in each trajectory
 
 solver:
   
   ##### KEY COMPUTATION PARAMETERS #####
 
   eps_diagnose: False # plot to determine optimal epsilon for diff maps, recommended True for first run
-  epsilon: 0.01 # Tuned once per dataset by choosing a value in the centre of eps_diagnose
+  epsilon: 0.01 # Tuned once per dataset by choosing a value in the centre of eps_diagnose spectrum
   alpha: 1 # diffusion map normalisation constant. Can also be 0 or 0.5 but we need 1 to recover the laplace-beltrami operator.
+  knn: 100 # knn parameter, tuned by making sure max kNN radius > 3*sqrt(4*eps) in logs. 
+  # if data is not large turn off knn by set to null.
 
-  J: 36 # number of eigenfunctions of the 0-laplacian to compute. # SEC depends entirely on this truncation. 
-  # Values above 20 should suffice. Above a certain J the eigen basis will just add noise and expensive computation
-  # Therefore J should be as small as possible a value that can accurately reconstruct functions
-  # (check Laplacian residual and reconstruction error to inform J choice)
-  n_frames: 48 # number of orthonormal basis eigen-1-forms of the 1-Laplacian to compute from an overcomplete frame 
-  # (spanning set of square-integrable vector fields).
-  # Try equal J first and increase if needed.
-  max_kernel_dim: 2 # dimension of the solution space of symmetries from SVD. Each row of V.T 
+  M: 36 # number of eigenfunctions of the 0-laplacian to compute. # SEC depends entirely on this truncation. 
+  # Values above 20 should suffice. Above a certain M the eigen basis will just add noise and expensive computation
+  # Therefore M should be as small as possible a value that can accurately reconstruct functions
+  # (check Laplacian residual and x reconstruction error to inform J choice)
+  frame_retain_thres: 1.0e-3 # how many basis 1 forms to retain from the overcomplete frame.
+  # Lower threshold retain more of the frames, though this is likely just noise below 1e-4.
+  # Alternatively can be set by parsing n_frames = dimension of manifold x M, which is the effective rank of linear system.
+  max_kernel_dim: 12 # dimension of the solution space of symmetries from SVD. Each row of V.T 
   # (corresponding to smallest singular values) is a set of coefficient representing an unique symmetry vector field V.
   # Linear combinations of these symmetries should also be symmetries: Any vector field in the span of the 
   # recovered max_kernel_dim vector fields are also infinitesimal symmetry fields, trivial or not.

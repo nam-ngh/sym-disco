@@ -77,7 +77,7 @@ class ODEGen:
         As, Bs = np.meshgrid(A_grid, B_grid, indexing='ij')
         As = As.ravel() + np.random.normal(0, 0.3*(A_grid[1]-A_grid[0]), n*n)
         Bs = Bs.ravel() + np.random.normal(0, 0.3*(B_grid[1]-B_grid[0]), n*n)
-        As = np.clip(As, 1e-3, None)
+        As = np.clip(As, A_min * 0.5, None)
 
         trajectories = []
         for A, B in zip(As, Bs):
@@ -138,6 +138,9 @@ def main(eq: str):
 
     if eq == 'constant_velocity':
         gen.constant_velocity_equation(name=eq, **cfg['gen_params'])
+
+    if eq == 'ermakov_pinney':
+        gen.ermakov_pinney_equation(name=eq, **cfg['gen_params'])
     
 if __name__ == "__main__":
     p = argparse.ArgumentParser()

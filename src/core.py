@@ -3,13 +3,18 @@ import scipy as sp
 import matplotlib.pyplot as plt
 from scipy.spatial.distance import pdist, squareform
 from scipy.sparse.linalg import eigsh
-from typing import List
+from sklearn.neighbors import NearestNeighbors
+from scipy.sparse import csr_matrix, diags
 from scipy.signal import savgol_filter
+from typing import List
 
 class SymSolver:
     def __init__(self):
         self.eps = None
         self.data = None
+        self.max_order = None
+        self.data_mu = None
+        self.data_sd = None
         self.eigvals = None
         self.eigvecs = None
         self.M = None
@@ -24,59 +29,97 @@ class SymSolver:
     ########################### Diffusion maps algorithm ###########################
 
 
-    def diffmap_preprocess(self, data, t_steps, epsilon=1.0, alpha=1.0, standardize=True, diagnose=False):
+    def diffmap_preprocess(self, data, t_steps, epsilon=1.0, alpha=1.0, standardize=True, diagnose=False, knn=None):
         '''
         Preprocess data by diffusion maps, returning objects no longer in coordinate space.
         '''
+        self.max_order = int(data.shape[1] - 2)
+        print(f'Data shape: {data.shape}. Max derivative order: {self.max_order}')
 
         if standardize:
             mu, sd = data.mean(0), data.std(0)
+            self.data_mu = mu
+            self.data_std = sd
             data = data.copy()
             data[:, 0] = (data[:, 0] - mu[0]) / sd[0] # x
             data[:, 1] = (data[:, 1] - mu[1]) / sd[1] # u
-            data[:, 2] = data[:, 2] * sd[0] / sd[1]
+            for p in range(self.max_order):
+                data[:, 2+p] = data[:, 2+p] * (sd[0]**(p+1)) / sd[1]
 
-        # pairwise distances
-        pair_dist = squareform(pdist(data))
+        N = data.shape[0]
+        if knn is None:
+            # pairwise distances
+            pair_dist = squareform(pdist(data))
 
-        if diagnose:
-            # plot to determine optimal epsilon
-            D2 = pair_dist**2
-            print(np.median(D2))
-            eps_grid = np.logspace(-5, 2, 40)
-            S = [np.exp(-D2/e).sum() for e in eps_grid]
-            plt.loglog(eps_grid, S, 'o-')
-        
-        # kernel matrix K 
-        K_raw = np.exp(-(pair_dist ** 2)/(4*epsilon))
+            if diagnose:
+                # plot to determine optimal epsilon
+                D2 = pair_dist**2
+                print('Pairwise distance median: ', np.median(D2))
+                eps_grid = np.logspace(-5, 2, 40)
+                S = [np.exp(-D2/e).sum() for e in eps_grid]
+                plt.loglog(eps_grid, S, 'o-')
+                plt.show()
+            
+            # kernel matrix K 
+            K_raw = np.exp(-(pair_dist ** 2)/(4*epsilon))
 
-        # degree vec
-        q = np.sum(K_raw, axis=1)
+            # degree vec
+            q = np.sum(K_raw, axis=1)
 
-        # normalised kernel & degree vec
-        K_hat = K_raw / (np.outer(q ** alpha, q ** alpha))
-        del K_raw, q
+            # normalised kernel & degree vec
+            K_hat = K_raw / (np.outer(q ** alpha, q ** alpha))
+            del K_raw, q
 
-        d = np.sum(K_hat, axis=1)
+            d = np.sum(K_hat, axis=1)
 
-        # sparsify? if yes also recompute d and Psym
-        # K = np.where(K < K.max() * 1e-10, 0.0, K)
-        # print('sparsity:', (K != 0).mean())
-        # self.K_hat = csr_matrix(K)
+            # sparsify? if yes also recompute d and Psym
+            # K = np.where(K < K.max() * 1e-10, 0.0, K)
+            # print('sparsity:', (K != 0).mean())
+            # self.K_hat = csr_matrix(K)
 
-        # transition matrix
-        P_sym = K_hat / (np.sqrt(d)[:, None]) / (np.sqrt(d)[None, :])
+            # transition matrix
+            P_sym = K_hat / (np.sqrt(d)[:, None]) / (np.sqrt(d)[None, :])
 
-        # ensure symmetry
-        P_sym = (P_sym + P_sym.T) / 2.0
-        print(f'P_sym shape: {P_sym.shape}, d shape: {d.shape}')
+            # ensure symmetry
+            P_sym = (P_sym + P_sym.T) / 2.0
+
+        else:
+            nbrs = NearestNeighbors(n_neighbors=knn).fit(data)
+            dist, idx = nbrs.kneighbors(data)
+
+            if diagnose:
+                D2 = dist**2
+                print('kNN distance median: ', np.median(D2))
+                eps_grid = np.logspace(-5, 2, 40)
+                S = [np.exp(-D2/e).sum() for e in eps_grid]
+                plt.loglog(eps_grid, S, 'o-')
+                plt.show()
+            print('max kNN radius:', dist.max(), ' 3*sqrt(4*eps):', 3*np.sqrt(4*epsilon))
+
+            rows = np.repeat(np.arange(N), knn)
+            vals = np.exp(-(dist.ravel()**2)/(4*epsilon))
+            K_hat = csr_matrix((vals, (rows, idx.ravel())), shape=(N, N))
+            K_hat = K_hat.maximum(K_hat.T) # symmetrise
+
+            q = np.asarray(K_hat.sum(1)).ravel()
+            Dq = diags(q**(-alpha))
+            K_hat = Dq @ K_hat @ Dq
+
+            d = np.asarray(K_hat.sum(1)).ravel()
+            Dd = diags(1.0/np.sqrt(d))
+            P_sym = Dd @ K_hat @ Dd
+            del Dd, q
+
+            P_sym = (P_sym + P_sym.T) * 0.5
+            print(f'sparsity: {P_sym.nnz / N**2:.2e}')
 
         # store
         self.eps = epsilon
         self.data = data
-        self.N = data.shape[0]
+        self.N = N
         self.t_size = t_steps
 
+        print(f'P_sym shape: {P_sym.shape}, d shape: {d.shape}')
         return P_sym, d, K_hat
 
 
@@ -84,13 +127,13 @@ class SymSolver:
 
 
     def check_eigsh_res(self, eigvals, eigvecs_sym, P_sym):
-        res = np.abs(P_sym @ eigvecs_sym - eigvals[None, :] * eigvecs_sym).max(axis=0)
+        res = np.abs(np.asarray(P_sym @ eigvecs_sym) - eigvals[None, :] * eigvecs_sym).max(axis=0)
         print(f'eigsh residual: max {res.max():.2e} at mode {res.argmax()}')
         return res
     
     def check_laplacian_res(self, K_hat, d):
         E = self.eigvecs
-        LgE = (d[:, None] * E - K_hat @ E) / (self.eps * d[:, None])
+        LgE = (d[:, None] * E - np.asarray(K_hat @ E)) / (self.eps * d[:, None])
         res = np.abs(LgE - self.eigvals[None, :] * E).max(axis=0)
         print(f'Laplacian residual: max {res.max():.2e} at mode {res.argmax()}')
 
@@ -101,7 +144,7 @@ class SymSolver:
         '''
         phi = self.eigvecs[:, :J]
         f_hat = phi.T @ (d * f)
-        print(f'{name} reconstruction error at J={J}: ', np.abs(phi @ f_hat - f).max() / np.linalg.norm(f - f.mean()))
+        print(f'{name} reconstruction error at J={J}: ', np.linalg.norm(phi @ f_hat - f) / np.linalg.norm(f - f.mean()))
 
     def compute_laplacian_spectrum(
             self, P_sym, d, K_hat,
@@ -129,6 +172,7 @@ class SymSolver:
             self.eigvals = eigvals[-J:][::-1]
             self.eigvecs = eigvecs[:, -J:][:, ::-1]
 
+        print('Shape eigvecs: ', self.eigvecs.shape)
         # convert to Laplacian eigenvalues
         # self.eigvals = -np.log(np.clip(self.eigvals, 1e-16, None)) / self.eps
         self.eigvals = (1 - self.eigvals)/self.eps
@@ -253,21 +297,11 @@ class SymSolver:
         # (i,j,k,l) -> (i,l,j,k) - can transpose but this is cleaner
         c1_iljk = np.einsum('iljk->ijkl', c1)
         c1_ikjl = np.einsum('ikjl->ijkl', c1)
+        del c1
         # (i,j,k,l) -> (i,k,j,l)
         c2_iljk = np.einsum('iljk->ijkl', c2)
         c2_ikjl = np.einsum('ikjl->ijkl', c2)
-
-        # We need to broadcast lambda_j (axis 1) and lambda_l (axis 3)
-        lam_j = self.eigvals[np.newaxis, :, np.newaxis, np.newaxis]  # shape (1, M, 1, 1)
-        lam_l = self.eigvals[np.newaxis, np.newaxis, np.newaxis, :]  # shape (1, 1, 1, M)
-
-        # Hodge Grammian G (shape: M, M, M, M)
-        G = ((lam_j + lam_l) * c0 - c1_ikjl) / 2.0
-        G_jilk = np.einsum('jilk->ijkl', G)
-        G_jikl = np.einsum('jikl->ijkl', G)
-        G_ijlk = np.einsum('ijlk->ijkl', G)
-        G_hat = G + G_jilk - G_jikl - G_ijlk
-        self.check_G(G)
+        del c2
 
         lam = self.eigvals
         lam_i = lam[:, None, None, None]
@@ -275,25 +309,54 @@ class SymSolver:
         lam_k = lam[None, None, :, None]
         lam_l = lam[None, None, None, :]
 
-        term1 = (lam_i + lam_j + lam_k + lam_l) * (c1_iljk - c1_ikjl)
+        # term1 = (lam_i + lam_j + lam_k + lam_l) * (c1_iljk - c1_ikjl)
+        diff = c1_iljk - c1_ikjl
+        term1 = np.zeros_like(diff)
+        buf = np.empty_like(diff)
+        for ax, lm in enumerate([
+            lam[:,None,None,None], lam[None,:,None,None],
+            lam[None,None,:,None], lam[None,None,None,:]
+        ]):
+            np.multiply(diff, lm, out=buf)
+            term1 += buf
+        del diff, buf
         term2 = c2_ikjl - c2_iljk
+        del c1_iljk, c2_iljk, c2_ikjl, lam_i, lam_k
 
-        E_hat = term1 + term2
+        term1 += term2
+        E_hat = term1
         self.check_E_hat(E_hat)
-        H = G - np.einsum('jikl->ijkl', G)
-
-        G_hat_flat, idxs = self.flatten_antisym_4tensor(G_hat, M)
         E_hat_flat, _ = self.flatten_antisym_4tensor(E_hat, M)
-        print(f'G_hat_flat shape: {G_hat_flat.shape},')
-        print(f'H shape: {H.shape}')
-        self.antisym_idx = idxs
+        del term1, term2, E_hat
+
+        # Hodge Grammian G (shape: M, M, M, M)
+        G = c0 * (lam_j + lam_l)
+        G -= c1_ikjl
+        G /= 2.0
+        del c0, c1_ikjl, lam_j, lam_l
+        self.check_G(G)
+
+        G_hat = G.copy()
+        G_hat += np.einsum('jilk->ijkl', G)
+        G_hat -= np.einsum('jikl->ijkl', G)
+        G_hat -= np.einsum('ijlk->ijkl', G)
+        G_hat_flat, idxs = self.flatten_antisym_4tensor(G_hat, M)
         self.check_G_hat_flat(G_hat_flat)
+        print(f'G_hat_flat shape: {G_hat_flat.shape},')
+        del G_hat
 
         G1_flat = G_hat_flat + E_hat_flat
-        G1_flat = (G1_flat + G1_flat.T) / 2.0
+        G1_flat += G1_flat.T
+        G1_flat /= 2.0
         print('G1_flat shape: ', G1_flat.shape)
 
+        H = G - np.einsum('jikl->ijkl', G)
+        print(f'H shape: {H.shape}')
+        del G
+
+        self.antisym_idx = idxs
         h, U = np.linalg.eigh(G1_flat)
+        del G1_flat
         idx = np.argsort(h)[::-1]
         h, U = h[idx], U[:, idx]
         if thres is not None:
@@ -303,8 +366,8 @@ class SymSolver:
             U_tilde = U[:, keep]
         else:
             U_tilde = U[:, :n_frames] # (P, n_frames)
-            self.n_frames = n_frames
-            
+
+        self.n_frames = U_tilde.shape[1]
         print(f'Shape U_tilde: {U_tilde.shape}')
 
         L = U_tilde.T @ E_hat_flat @ U_tilde
@@ -312,6 +375,7 @@ class SymSolver:
         L = (L + L.T) / 2.0
         B = (B + B.T) / 2.0
         print(f'Shape L: {L.shape}, Shape B: {B.shape}')
+        del G_hat_flat, E_hat_flat
 
         nu, a = sp.linalg.eigh(L, B) # (n_frames,), (n_frames, n_frames)
         print(f'Shape nu: {nu.shape}, Shape a: {a.shape}')
@@ -321,6 +385,7 @@ class SymSolver:
         # coefficients for all basis eigen 1-forms
         frame_coeffs = U_tilde @ a # (P, n_frames)
         print(f'Eigen frame coefficients shape: {frame_coeffs.shape}')
+        del L, B, U_tilde
 
         return frame_coeffs, H
 
@@ -420,7 +485,7 @@ class SymSolver:
         
     def inv_fourier_pushfwd(self, f_hat, V):
         '''
-        Apply V (pushforward) then inverse fourier transform back to jet space: 
+        Apply V operator (pushforward) then inverse fourier transform back to jet space: 
         (?, M) @ (M, M) @ (M, N) -> (?, N)
         ? may be 1...dim
         '''
@@ -437,29 +502,48 @@ class SymSolver:
     ########################### Determining null-space problem ###########################
 
 
-    def compute_contact_form_kernel(self, d, sav_golay: bool=True):
-            '''
-            Computes operator rep of vector field W, at each point spanning ker(gamma) up to a scale factor.
-            Returns:
-                W_hat: (M, M)
-            '''
-            x = self.data[:, 0].reshape(-1, self.t_size) # (n_t, t_size)
-            self.n_trajectory = x.shape[0]
-            phi = self.eigvecs.reshape(-1, self.t_size, self.M) # (n_t, t_size, M)
-    
-            if sav_golay:
-                dx = np.diff(x, axis=1).mean()
-                dphi = savgol_filter(
-                    phi, window_length=11, polyorder=3,
-                    deriv=1, delta=dx, axis=1
-                ) # along t_size
-            else:
-                dphi = np.stack(
-                    [np.gradient(phi[t], x[t], axis=0)for t in range(phi.shape[0])]
-                )
-    
-            dphi = dphi.reshape(-1, self.eigvecs.shape[1]) # (N, M)
-            return self.eigvecs.T @ (d[:, None] * dphi)
+    def compute_contact_form_kernel(self, d, sav_golay: bool=True, run_checks: bool=False):
+        '''
+        Computes operator rep of vector field W, at each point spanning ker(gamma) up to a scale factor.
+        Returns:
+            W_hat: (M, M)
+        '''
+        x = self.data[:, 0].reshape(-1, self.t_size) # (n_t, t_size)
+        self.n_trajectory = x.shape[0]
+        self.linsys_keep_mask = self.make_mask()
+        phi = self.eigvecs.reshape(-1, self.t_size, self.M) # (n_t, t_size, M)
+
+        if sav_golay:
+            dx = np.diff(x, axis=1).mean()
+            dphi = savgol_filter(
+                phi, window_length=11, polyorder=3,
+                deriv=1, delta=dx, axis=1
+            ) # along t_size
+        else:
+            dphi = np.stack(
+                [np.gradient(phi[t], x[t], axis=0)for t in range(phi.shape[0])]
+            )
+
+        dphi = dphi.reshape(-1, self.eigvecs.shape[1]) # (N, M)
+        W_op = self.eigvecs.T @ (d[:, None] * dphi)
+        if run_checks:
+            self.check_W_op(
+                W_op=W_op,
+                x=self.data[:, 0],
+                u=self.data[:, 1],
+                ux=self.data[:, 2],
+                u_hat=self.fourier_tf(self.data[:, 1], d),
+                x_hat=self.fourier_tf(self.data[:, 0], d)
+            )
+        return W_op
+
+    def make_mask(self, edge=5):
+        # mask to discard start and ends of trajectories, where dphi is unstable
+        assert self.t_size > 2*edge, f't_steps {self.t_size} too small for edge {edge}'
+        mask = np.ones((self.n_trajectory, self.t_size), bool)
+        mask[:, :edge] = mask[:, -edge:] = False
+        mask = mask.ravel()
+        return mask
 
     def check_W_op(self, W_op, x, u, ux, u_hat, x_hat,):
         # raw computes
@@ -481,94 +565,122 @@ class SymSolver:
         print('Wx all around 1?', Wx.mean(), Wx.std())
         print('Wu masked res around 0?', np.linalg.norm(res[mask]) / np.linalg.norm(ux[mask]))
         print('Wu all res around 0?', np.linalg.norm(res) / np.linalg.norm(ux))
-            
+
+    def check_frame_quality(self, W_op, Vks, x_hat, u_hats, mask):
+        Vstack = np.column_stack([Vk.ravel() for Vk in Vks]) # (M*M, n_frames)
+        c, _, rank, _ = np.linalg.lstsq(Vstack, W_op.ravel(), rcond=None)
+        W_recon = (Vstack @ c).reshape(W_op.shape)
+        err = np.linalg.norm(W_recon - W_op) / np.linalg.norm(W_op)
+        print(f'W reconstruction from frame rel err: {err:.4f}, lstsq rank {rank}/{len(Vks)}')
+
+        pairs = [('x', x_hat)] + [(f'u{p}' if p else 'u', u_hats[p]) for p in range(len(u_hats))]
+        for name, h in pairs:
+            a = self.inv_fourier_pushfwd(h, W_op).ravel()[mask]
+            b = self.inv_fourier_pushfwd(h, W_recon).ravel()[mask]
+            abs_e, scale = np.abs(a - b).mean(), np.abs(a).mean()
+            rel = f'rel {abs_e/scale:.4f}' if scale > 1e-8 else 'rel n/a'
+            print(f'    W({name}): abs {abs_e:.4e}  {rel}')
+
     def check_symmetry_residual(self, V_op, W_op, d):
-        x = self.data[:, 0]
-        u = self.data[:, 1]
-        ux = self.data[:, 2]
-        u_hat = self.fourier_tf(u, d)
-        x_hat = self.fourier_tf(x, d)
+        x_hat = self.fourier_tf(self.data[:, 0], d)
         Z = self.lie_bracket(V_op, W_op)
-        Zu = self.inv_fourier_pushfwd(u_hat, Z).ravel()
         Zx = self.inv_fourier_pushfwd(x_hat, Z).ravel()
-
         mask = self.linsys_keep_mask
-        res = (Zu - ux * Zx)[mask]
-        Znorm = np.sqrt(Zu**2 + Zx**2)[mask]
+        res, nrm = [], Zx**2
+        for p in range(1, self.max_order + 1):
+            h = self.fourier_tf(self.data[:, p], d)
+            Zu = self.inv_fourier_pushfwd(h, Z).ravel()
+            res.append((Zu - self.data[:, 1+p] * Zx)[mask])
+            nrm = nrm + Zu**2
+        res = np.concatenate(res)
+        return np.linalg.norm(res) / np.linalg.norm(np.sqrt(nrm)[mask])
 
-        return np.linalg.norm(res) / np.linalg.norm(Znorm)
+    def solve(self, frame_coeffs, H, d, W_op, max_kernel_dim: int=6, svd_thres: float=None):
+        '''
+        Build and solve linear system with SVD for constant coefficients of V
+        '''
+        mask = self.linsys_keep_mask
 
-    def solve(self, frame_coeffs, H, d, W_op, max_kernel_dim: int=6, svd_thres: float=None, run_num_checks: bool=False):
+        ### BUILD LINEAR SYSTEM ###
         idx_i, idx_j = self.antisym_idx
         x = self.data[:, 0]
-        u = self.data[:, 1]
-        ux = self.data[:, 2]
-        u_hat = self.fourier_tf(u, d)
         x_hat = self.fourier_tf(x, d)
 
-        # mask to discard start and ends of trajectories, where dphi is unstable
-        mask = np.ones((self.n_trajectory, self.t_size), bool)
-        mask[:, :5] = mask[:, -5:] = False
-        mask = mask.ravel()
-        self.linsys_keep_mask = mask
-
-        # numerical checks
-        if run_num_checks:
-            self.check_W_op(W_op, x, u, ux, u_hat, x_hat)
-        else:
-            # minimum W_op quality check
-            Wx = self.inv_fourier_pushfwd(x_hat, W_op).ravel()
-            print('Wx around 1?', Wx[mask].mean(), Wx[mask].std())
-
+        # precompute all fourier transformed derivatives of u, including u
+        u_hats = [self.fourier_tf(self.data[:, p], d) for p in range(1, self.max_order + 1)]
         cols = []
+        c_cols = []
         Vks = []
         for k in range(self.n_frames):
             rho_k_flat = frame_coeffs[:, k]
             rho_k = self.unflatten_antisym_1tensor(rho_k_flat, self.M, idx_i, idx_j) # (M, M)
             Vk = self.sharp(H, rho_k) # (M, M)
             Zk = self.lie_bracket(Vk, W_op)
-            Zku = self.inv_fourier_pushfwd(u_hat, Zk)
             Zkx = self.inv_fourier_pushfwd(x_hat, Zk)
-            col = (Zku - ux * Zkx).ravel()
-            cols.append(col)
+            Vkx = self.inv_fourier_pushfwd(x_hat, Vk)
             Vks.append(Vk)
 
-        A = np.column_stack(cols)[mask]
+            col_kps = []
+            c_col_kps = []
+            for p in range(1, self.max_order + 1):
+                # first term in colkp
+                u_pminus1_hat = u_hats[p-1]
+                Zku_pminus1 = self.inv_fourier_pushfwd(u_pminus1_hat, Zk)
+                Vku_pminus1 = self.inv_fourier_pushfwd(u_pminus1_hat, Vk)
+                # second term in colkp
+                u_p = self.data[:, 1+p]
+                col_kp = (Zku_pminus1 - u_p * Zkx).ravel() # (N,)
+                c_col_kp = (Vku_pminus1 - u_p * Vkx).ravel()
+                col_kps.append(col_kp)
+                c_col_kps.append(c_col_kp)
 
-        def is_trivial(c, tol=1e-3):
-            V = sum(ck * Vk for ck, Vk in zip(c, Vks))
-            Vu = self.inv_fourier_pushfwd(u_hat, V).ravel()
-            Vx = self.inv_fourier_pushfwd(x_hat, V).ravel()
-            gV = Vu - ux * Vx # gamma(V), pointwise
-            Vnorm = np.sqrt(Vu**2 + Vx**2)
-            return np.abs(gV[mask]).mean() / Vnorm[mask].mean() < tol
+            col_k = np.concatenate(col_kps) # (PxN,)
+            cols.append(col_k)
+
+            c_col_k = np.concatenate(c_col_kps)
+            c_cols.append(c_col_k)
+
+        # quality checks before solve
+        # minimum W_op quality check
+        Wx = self.inv_fourier_pushfwd(x_hat, W_op).ravel()
+        print('Wx around 1?', Wx[mask].mean(), Wx[mask].std())
+        self.check_frame_quality(W_op, Vks, x_hat, u_hats, mask)
+
+        # stack cols into matrix
+        tiled_mask = np.tile(mask, self.max_order)
+        A = np.column_stack(cols)[tiled_mask]
+        C = np.column_stack(c_cols)[tiled_mask]
+        print(f'A norm: {np.linalg.norm(A)}, C norm: {np.linalg.norm(C)}')
 
         ### SOLVE ###
         _, S, Vt = np.linalg.svd(A, full_matrices=False)
-        singular_values_scaled = S/S[0]
+        sv_scaled = S / S[0]
+        plt.semilogy(S/S[0], 'o-')
+        plt.xlabel('index')
+        plt.ylabel('Scaled singular values')
+        plt.show()
 
         # kernel analysis
-        if svd_thres:
-            kernel_idx = np.where(singular_values_scaled < svd_thres)[0]
-            if len(kernel_idx) == 0:
-                raise ValueError('No non-trivial null space found. Try raising svd_thres?')
-        else:
-            kernel_idx = [len(S) - k for k in range(1, max_kernel_dim + 1)]
+        MACHINE_ZERO = 1e-14
+        valid = np.where(sv_scaled > MACHINE_ZERO)[0]
+        A_rank = len(valid)
+        R = Vt[:A_rank].T
 
-        print('Singular values range top - kernel', S[:2], S[kernel_idx])
-        print('Singular values range top - kernel scaled ', singular_values_scaled[:2], singular_values_scaled[kernel_idx])
+        A_proj = A @ R # (PxN, A_rank) 
+        C_proj = C @ R # (PxN, A_rank)
+        print(f'C rank: {np.linalg.matrix_rank(C_proj)}')
 
-        nontrivials = []
-        trivials = []
-        for i in kernel_idx:
-            params = Vt[i]
+        w, Z = sp.linalg.eigh(A_proj.T @ A_proj, C_proj.T @ C_proj + 1e-12*np.eye(A_rank))
+        alpha = R @ Z # back to full frame coordinates
+        print('AC generalised eigenvalues:', w[:16])
+        plt.semilogy(w, 'o-') 
+        plt.show()
+
+        param_set = []
+        for i in range(max_kernel_dim):
+            params = alpha[:, i]
             V_op = sum(ck * Vk for ck, Vk in zip(params, Vks))
             res = self.check_symmetry_residual(V_op, W_op, d)
-            print(f'{len(S)-(i+1)}-th kernel dimension determining equation residual: {res}')
-            if not is_trivial(params):
-                nontrivials.append(params)
-            else:
-                trivials.append(params)
-
-        print(f'null dim {len(kernel_idx)}, non-trivial {len(nontrivials)}')
-        return nontrivials, Vks
+            print(f'eigenvalue {i}: {w[i]:.4e}, determining equation residual: {res}')
+            param_set.append(params)
+        return param_set, Vks
