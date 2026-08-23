@@ -655,16 +655,17 @@ class SymSolver:
         ### SOLVE ###
         _, S, Vt = np.linalg.svd(A, full_matrices=False)
         sv_scaled = S / S[0]
-        plt.semilogy(S/S[0], 'o-')
-        plt.xlabel('index')
-        plt.ylabel('Scaled singular values')
-        plt.show()
+        # plt.semilogy(S/S[0], 'o-')
+        # plt.xlabel('index')
+        # plt.ylabel('Scaled singular values')
+        # plt.show()
 
         # kernel analysis
         MACHINE_ZERO = 1e-14
         valid = np.where(sv_scaled > MACHINE_ZERO)[0]
         A_rank = len(valid)
         R = Vt[:A_rank].T
+        print(f'Low singular values of A: ', sv_scaled[valid[-max_kernel_dim:]])
 
         A_proj = A @ R # (PxN, A_rank) 
         C_proj = C @ R # (PxN, A_rank)
