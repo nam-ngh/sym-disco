@@ -3,6 +3,7 @@ data:
   t_steps: 64
 
   ##### generation configs, blind to solver #####
+  seed: 42
   x_min: 0.5
   x_max: 3.5
   noise: 0.01
