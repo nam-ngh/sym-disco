@@ -717,6 +717,24 @@ class SymSolver:
         s = np.linalg.svd(Qr.T @ Qa, compute_uv=False)
         print('principal angles (deg):', np.round(np.degrees(np.arccos(np.clip(s, -1, 1))), 2))
 
+    def angle_to_W(self, V_ops, WX, X_hat):
+        '''
+        Angle between each recovered field and W itself, in jet coordinates.
+        Near 0 means the recovered symmetry is (mostly) trivial.
+        '''
+        dims = WX.shape[0]
+        m = np.tile(self.linsys_keep_mask, dims)
+        w = WX.ravel()[m]
+        w = w / np.linalg.norm(w)
+
+        out = []
+        for i, V_op in enumerate(V_ops):
+            v = self.inv_fourier_pushfwd(X_hat, V_op)[:dims].ravel()[m]
+            v = v / np.linalg.norm(v)
+            ang = np.degrees(np.arccos(np.clip(abs(np.dot(v, w)), -1, 1)))
+            out.append(ang)
+            print(f'  V{i} vs W: {ang:.1f} deg')
+        return np.array(out)
 
     ########################### Determining null-space problem ###########################
 

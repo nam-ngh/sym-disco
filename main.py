@@ -121,19 +121,21 @@ def main(
             res_abs, res_scale = solver.determining_residual(V_op, WX, X_hat, d)
             print(f'  {i}-th AC eigval determining residual rel:', res_abs/res_scale, 'abs, scale:', res_abs, res_scale)
 
+        print('Alignment with W: ')
+        solver.angle_to_W(sym_ops, WX, X_hat)
         if an_gens is not None:
             # how well does the span line up between recovered and known, expect 0
             solver.principal_angles(sym_ops, X_hat, an_gens)
               
         # symmetries can be any linear combinations of sym_ops, plot
-        V_op = sym_ops[run_cf['plot_kernel_dim']]
-        V = solver.inv_fourier_pushfwd(X_hat, V_op)
-        solver.plot_vector_field(
-            V, scale=run_cf['plot_sym_vec_scale'], 
-            subsample=run_cf['plot_subsample'],
-            normalise='norm',
-            title='Internal Symmetry'
-        )
+        for V_op in sym_ops:
+            V = solver.inv_fourier_pushfwd(X_hat, V_op)
+            solver.plot_vector_field(
+                V, scale=run_cf['plot_sym_vec_scale'], 
+                subsample=run_cf['plot_subsample'],
+                normalise='norm',
+                title='Internal Symmetry'
+            )
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
