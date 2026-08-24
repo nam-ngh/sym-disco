@@ -29,7 +29,7 @@ class SymSolver:
     ########################### Diffusion maps algorithm ###########################
 
 
-    def diffmap_preprocess(self, data, t_steps, epsilon=1.0, alpha=1.0, standardize=True, diagnose=False, knn=None):
+    def diffmap_preprocess(self, data, t_steps, n_trajectories, epsilon=1.0, alpha=1.0, standardize=True, diagnose=False, knn=None):
         '''
         Preprocess data by diffusion maps, returning objects no longer in coordinate space.
         '''
@@ -118,9 +118,19 @@ class SymSolver:
         self.data = data
         self.N = N
         self.t_size = t_steps
+        self.n_trajectory = n_trajectories
+        self.linsys_keep_mask = self.make_mask()
 
         print(f'P_sym shape: {P_sym.shape}, d shape: {d.shape}')
         return P_sym, d, K_hat
+
+    def make_mask(self, edge=5):
+        # mask to discard start and ends of trajectories, where dphi is unstable
+        assert self.t_size > 2*edge, f't_steps {self.t_size} too small for edge {edge}'
+        mask = np.ones((self.n_trajectory, self.t_size), bool)
+        mask[:, :edge] = mask[:, -edge:] = False
+        mask = mask.ravel()
+        return mask
 
 
     ########################### Spectral basis construction for SEC ###########################
@@ -392,13 +402,12 @@ class SymSolver:
 
         return frame_coeffs, H
 
-    def framecoeff_to_vec(self, frame_coeffs, H, d, mode=0):
+    def framecoeff_to_vec(self, frame_coeffs, H, X_hat, mode=0):
         # select mode to convert
         ef_mode = frame_coeffs[:, mode]
         idx_i, idx_j = self.antisym_idx
         ef_mat = self.unflatten_antisym_1tensor(ef_mode, self.M, idx_i, idx_j)
         V = self.sharp(H, ef_mat)
-        X_hat = self.fourier_tf(self.data, d)
         return self.inv_fourier_pushfwd(X_hat, V)
 
     @staticmethod
@@ -467,16 +476,9 @@ class SymSolver:
         plt.tight_layout()
         plt.show()
 
+
     ########################### SEC related operations ###########################
 
-    def lie_bracket(self, V, W):
-        '''
-        Computes the Lie bracket of vector fields V and W
-        as matrix commutator via their op rep
-        Returns:
-            Z: (M, M) operator
-        '''
-        return V @ W - W @ V
 
     def fourier_tf(self, f, d):
         '''
@@ -502,199 +504,253 @@ class SymSolver:
         return np.einsum('ijkl,ij->kl', H, form_coeff / 2.0)
 
 
-    ########################### Determining null-space problem ###########################
+    ########################### Linear system setup methods ###########################
 
 
-    def compute_contact_form_kernel(self, d, sav_golay: bool=True, run_checks: bool=False):
-        '''
-        Computes operator rep of vector field W, at each point spanning ker(gamma) up to a scale factor.
-        Returns:
-            W_hat: (M, M)
-        '''
-        x = self.data[:, 0].reshape(-1, self.t_size) # (n_t, t_size)
-        self.n_trajectory = x.shape[0]
-        self.linsys_keep_mask = self.make_mask()
-        phi = self.eigvecs.reshape(-1, self.t_size, self.M) # (n_t, t_size, M)
-
-        print('rows monotonic in x?', np.all(np.diff(x, axis=1) > 0))
-        print('row 0 x range:', x[0,0], x[0,-1])
-        print('all rows same x?', np.abs(x - x[0]).max())
-
-        if sav_golay:
-            dx = np.diff(x, axis=1).mean()
-            dphi = savgol_filter(
-                phi, window_length=7, polyorder=3,
-                deriv=1, delta=dx, axis=1
-            ) # along t_size
-        else:
-            dphi = np.stack(
-                [np.gradient(phi[t], x[t], axis=0)for t in range(phi.shape[0])]
-            )
-
-        dphi = dphi.reshape(-1, self.eigvecs.shape[1]) # (N, M)
-        W_op = self.eigvecs.T @ (d[:, None] * dphi)
-        if run_checks:
-            self.check_W_op(
-                W_op=W_op,
-                x=self.data[:, 0],
-                u=self.data[:, 1],
-                ux=self.data[:, 2],
-                u_hat=self.fourier_tf(self.data[:, 1], d),
-                x_hat=self.fourier_tf(self.data[:, 0], d)
-            )
-        return W_op
-
-    def make_mask(self, edge=5):
-        # mask to discard start and ends of trajectories, where dphi is unstable
-        assert self.t_size > 2*edge, f't_steps {self.t_size} too small for edge {edge}'
-        mask = np.ones((self.n_trajectory, self.t_size), bool)
-        mask[:, :edge] = mask[:, -edge:] = False
-        mask = mask.ravel()
-        return mask
-
-    def check_W_op(self, W_op, x, u, ux, u_hat, x_hat,):
-        # raw computes
-        mask = self.linsys_keep_mask
-        xr = x.reshape(-1, self.t_size)
-        ur = u.reshape(-1, self.t_size)
-        du = np.stack([np.gradient(ur[t], xr[t]) for t in range(ur.shape[0])]).ravel()
-        r = (du/ux)[mask]
-        Wx = self.inv_fourier_pushfwd(x_hat, W_op).ravel()
-        # Wu vs ux res
-        res = self.inv_fourier_pushfwd(u_hat, W_op).ravel() - ux
-
-        print('du/ux med & std: ', np.median(r), r.std())
-        print('raw du/dx vs ux near 0?', np.linalg.norm(du - ux) / np.linalg.norm(ux))
-        print('masked du/dx vs ux near 0?', np.linalg.norm((du-ux)[mask]) / np.linalg.norm(ux[mask]))
-        print('u recon res near 0?', np.linalg.norm(self.eigvecs @ u_hat.ravel() - u) / np.linalg.norm(u - u.mean()))
-        print('x recon res near 0?', np.linalg.norm(self.eigvecs @ x_hat.ravel() - x) / np.linalg.norm(x - x.mean()))
-        print('Wx masked around 1?', Wx[mask].mean(), Wx[mask].std())
-        print('Wx all around 1?', Wx.mean(), Wx.std())
-        print('Wu masked res around 0?', np.linalg.norm(res[mask]) / np.linalg.norm(ux[mask]))
-        print('Wu all res around 0?', np.linalg.norm(res) / np.linalg.norm(ux))
-        if self.max_order > 1:
-            a1 = self.inv_fourier_pushfwd(u_hat, W_op).ravel()
-            a2 = self.inv_fourier_pushfwd(u_hat, W_op@W_op).ravel()
-            print('W(u) vs u1:', np.linalg.norm((a1-self.data[:,2])[mask])/np.linalg.norm(self.data[:,2][mask]))
-            print('W2(u) vs u2:', np.linalg.norm((a2-self.data[:,3])[mask])/np.linalg.norm(self.data[:,3][mask]))
-
-    def check_frame_quality(self, W_op, Vks, x_hat, u_hats, mask):
-        Vstack = np.column_stack([Vk.ravel() for Vk in Vks]) # (M*M, n_frames)
-        c, _, rank, _ = np.linalg.lstsq(Vstack, W_op.ravel(), rcond=None)
-        W_recon = (Vstack @ c).reshape(W_op.shape)
-        err = np.linalg.norm(W_recon - W_op) / np.linalg.norm(W_op)
-        print(f'W reconstruction from frame rel err: {err:.4f}, lstsq rank {rank}/{len(Vks)}')
-
-        pairs = [('x', x_hat)] + [(f'u{p}' if p else 'u', u_hats[p]) for p in range(len(u_hats))]
-        for name, h in pairs:
-            a = self.inv_fourier_pushfwd(h, W_op).ravel()[mask]
-            b = self.inv_fourier_pushfwd(h, W_recon).ravel()[mask]
-            abs_e, scale = np.abs(a - b).mean(), np.abs(a).mean()
-            rel = f'rel {abs_e/scale:.4f}' if scale > 1e-8 else 'rel n/a'
-            print(f'    W({name}): abs {abs_e:.4e}  {rel}')
-
-    def check_symmetry_residual(self, V_op, W_op, d):
-        x_hat = self.fourier_tf(self.data[:, 0], d)
-        Z = self.lie_bracket(V_op, W_op)
-        Zx = self.inv_fourier_pushfwd(x_hat, Z).ravel()
-        mask = self.linsys_keep_mask
-        res, nrm = [], Zx**2
-        for p in range(1, self.max_order + 1):
-            h = self.fourier_tf(self.data[:, p], d)
-            Zu = self.inv_fourier_pushfwd(h, Z).ravel()
-            res.append((Zu - self.data[:, 1+p] * Zx)[mask])
-            nrm = nrm + Zu**2
-        res = np.concatenate(res)
-        return np.linalg.norm(res) / np.linalg.norm(np.sqrt(nrm)[mask])
-
-    def solve(self, frame_coeffs, H, d, W_op, max_kernel_dim: int=6, svd_thres: float=None):
-        '''
-        Build and solve linear system with SVD for constant coefficients of V
-        '''
-        mask = self.linsys_keep_mask
-
-        ### BUILD LINEAR SYSTEM ###
+    def frames_to_operators(self, frame_coeffs, H):
         idx_i, idx_j = self.antisym_idx
-        x = self.data[:, 0]
-        x_hat = self.fourier_tf(x, d)
-
-        # precompute all fourier transformed derivatives of u, including u
-        u_hats = [self.fourier_tf(self.data[:, p], d) for p in range(1, self.max_order + 1)]
-        cols = []
-        c_cols = []
         Vks = []
         for k in range(self.n_frames):
             rho_k_flat = frame_coeffs[:, k]
             rho_k = self.unflatten_antisym_1tensor(rho_k_flat, self.M, idx_i, idx_j) # (M, M)
             Vk = self.sharp(H, rho_k) # (M, M)
-            Zk = self.lie_bracket(Vk, W_op)
-            Zkx = self.inv_fourier_pushfwd(x_hat, Zk).ravel()
-            Vkx = self.inv_fourier_pushfwd(x_hat, Vk).ravel()
             Vks.append(Vk)
+        return Vks
 
-            col_kps = []
-            c_col_kps = []
-            for p in range(1, self.max_order + 1):
-                # first term in colkp
-                u_pminus1_hat = u_hats[p-1]
-                Zku_pminus1 = self.inv_fourier_pushfwd(u_pminus1_hat, Zk).ravel()
-                Vku_pminus1 = self.inv_fourier_pushfwd(u_pminus1_hat, Vk).ravel()
-                # second term in colkp
-                u_p = self.data[:, 1+p].ravel()
-                col_kp = Zku_pminus1 - u_p * Zkx # (N,)
-                c_col_kp = Vku_pminus1 - u_p * Vkx
-                col_kps.append(col_kp)
-                c_col_kps.append(c_col_kp)
-                assert col_kp.shape == (self.N,), col_kp.shape
+    def compute_WX(self,):
+        '''
+        W = d_x + u1 d_u + u2 d_u1 + ... so its components W(x) ... W(u_p) ARE the data columns,
+        shifted by one, with W^x = 1. No operator, no differentiation, no error.
+        Has 1 less dimension than the jet space.
+        '''
+        dims = (self.max_order + 1)
+        N = self.N
+        comps = np.zeros((dims, N))
+        comps[0] = 1.0
+        for a in range(1, dims):
+            # W(u_{a-1}) = u_a so we just stack data
+            comps[a] = self.data[:, a + 1]
+        print('W(X) shape = (equation order + 1, N)? ', comps.shape)
+        return comps
 
-            col_k = np.concatenate(col_kps) # (PxN,)
-            cols.append(col_k)
+    def df_dx(self, F, sg_win=11, sg_poly=3):
+        '''
+        Derivative of sampled functions along trajectories, i.e. W(F) = D_x F.
 
-            c_col_k = np.concatenate(c_col_kps)
-            c_cols.append(c_col_k)
+        Uses the fact that trajectories ARE the integral curves of W, so the
+        along-trajectory derivative is exactly the action of W. No operator
+        composition involved.
 
-        # quality checks before solve
-        # minimum W_op quality check
-        Wx = self.inv_fourier_pushfwd(x_hat, W_op).ravel()
-        print('Wx around 1?', Wx[mask].mean(), Wx[mask].std())
-        self.check_frame_quality(W_op, Vks, x_hat, u_hats, mask)
+        F: (dim_F, N) or (N,) values sampled at the data points
+        returns: same shape, dF/dx along each trajectory
+        '''
+        F = F.reshape(-1, self.N)
+        dim_F = F.shape[0]
+        x = self.data[:, 0].reshape(-1, self.t_size)
+        dx = np.diff(x, axis=1).mean()
 
-        # stack cols into matrix
+        Fr = F.reshape(dim_F, -1, self.t_size) # (dim_F, n_trajectories, t)
+        dF = savgol_filter(
+            Fr, window_length=sg_win, 
+            polyorder=sg_poly,
+            deriv=1, delta=dx, axis=2
+        )
+        out = dF.reshape(dim_F, -1) # (dim_F, N)
+        return out
+
+    def jetlie_bracket(
+            self, V_op, WX, X_hat, d,
+            sg_win=11, sg_poly=3
+        ):
+        '''
+        Compute Z = [V, W] in coordinate jet space, using only SINGLE applications
+        of each operator, avoiding the matrix product V_op @ W_op which SEC DOES NOT SUPPORT.
+
+            [V,W] = V(W(X)) - W(V(X))
+
+        - V(W(X)): spectral pushforward of W's components through V_op.
+        One application of V. SEC supports this.
+        - W(V(X)): derivative of V's components ALONG trajectories, since the
+        trajectories are integral curves of W. One application of W, computed
+        by finite differences rather than by the operator.
+
+        V_op: (M, M) operator representation of V
+        WX: (dims, N) components of W in coordinates, i.e. WX = W(x), W(u), W(u1), ...
+        returns Z: (dims, N) components of the bracket in coordinates
+        '''
+        dims = WX.shape[0]
+
+        # term 1: V(WX) single application of V to each component of vec field coordinates WX
+        WX_hat = self.fourier_tf(WX.T, d) # (dims, M)
+        VW = self.inv_fourier_pushfwd(WX_hat, V_op) # (dims, N)
+
+        # term 2: W(V^a) V's components, differentiated along trajectories
+        VX = self.inv_fourier_pushfwd(X_hat, V_op) # (max_order + 2, N)
+        WV = self.df_dx(VX, sg_win, sg_poly)[:dims] # (dims, N)
+        return VW - WV
+
+    def jetlie_bracket_batch(self, Vks, WX, X_hat, d, sg_win=11, sg_poly=3, chunk=32, verbose=True):
+        '''
+        Batched version of jetlie_bracket: computes Z_k = [V_k, W] 
+        in jet coordinates for every frame element, vectorised together.
+
+        Processes #chunk frame elements at a time to bound peak memory:
+        a full batch needs K * dims_X * N floats, which is very large in GB
+
+        Params:
+            - Vks: list of K (M, M) operators, or an array (K, M, M)
+            - WX: (dims, N) components of W, dims = max_order + 1
+            - X_hat: (dims_X, M) spectral coefficients of the coordinate functions, dims_X = max_order + 2
+        Returns:
+            Z_all: (K, dims, N)
+        '''
+        Vs = np.asarray(Vks) # (K, M, M)
+        K = Vs.shape[0]
+        dims = WX.shape[0]
+        N = self.N
+
+        WX_hat = self.fourier_tf(WX.T, d) # (dims, M)
+
+        Z_all = np.empty((K, dims, N))
+
+        n_chunks = int(np.ceil(K / chunk))
+        for ci in range(n_chunks):
+            lo, hi = ci * chunk, min((ci + 1) * chunk, K)
+            VsT = np.transpose(Vs[lo:hi], (0, 2, 1)) # (k, M, M)
+
+            # term 1: V(W(X)) -- one application of each V to W's components
+            VW = np.einsum('am,kmn,pn->kap', WX_hat, VsT, self.eigvecs)
+
+            # term 2: W(V(X)) -- V's components differentiated along trajectories
+            VX = np.einsum('am,kmn,pn->kap', X_hat, VsT, self.eigvecs)
+            k, A, _ = VX.shape
+            WV = self.df_dx(VX.reshape(k * A, N), sg_win, sg_poly)
+            WV = WV.reshape(k, A, N)[:, :dims]
+
+            Z_all[lo:hi] = VW - WV
+
+            if verbose and n_chunks > 1:
+                print(f'  bracket chunk {ci+1}/{n_chunks}', end='\r')
+
+        if verbose:
+            print(f'Batched Lie brackets: Z_all {Z_all.shape}' + ' ' * 20)
+
+        return Z_all
+
+    def build_columns(self, Z_all):
+        '''
+        Turn batched brackets into the columns of the linear system.
+
+        For each contact form p = 1..P:  gamma^p(Z) = Z^{u_{p-1}} - u_p * Z^x
+        stacked over p, giving one (P*N,) column per frame element.
+
+        Z_all: (K, dims, N)
+        returns: (P*N, K)
+        '''
+        Zx = Z_all[:, 0] # (K, N)
+        blocks = [
+            Z_all[:, p] - self.data[None, :, 1 + p] * Zx
+            for p in range(1, self.max_order + 1)
+        ] # each (K, N)
+        return np.concatenate(blocks, axis=1).T # (P*N, K)
+
+    def determining_residual(self, V_op, W_components, X_hat, d, **kw):
+        '''
+        Determining-equation residual computed with the coordinate-space bracket.
+
+        For each contact form p = 1..P:  gamma^p(Z) = Z^{u_{p-1}} - u_p * Z^x
+        Returns the relative residual over the masked points.
+        '''
+        Z = self.jetlie_bracket(V_op, W_components, X_hat, d, **kw)
+        m = self.linsys_keep_mask
+
+        Zx = Z[0]
+        res, nrm = [], Zx**2
+        for p in range(1, self.max_order + 1):
+            Zu = Z[p]
+            res.append((Zu - self.data[:, 1 + p] * Zx)[m])
+            nrm = nrm + Zu**2
+        res = np.concatenate(res)
+        return np.linalg.norm(res), np.linalg.norm(np.sqrt(nrm)[m])
+
+    def fit_analytic_syms(self, gens, Vks, X_hat, ridge=0.0):
+        '''
+        Fit analytic generators into the frame's span, in pushforward space.
+        gens: (G, N, max_order + 2) generators evaluated on the data
+        Returns coeffs (G, n_frames) and per-generator relative fit error.
+        '''
+
+        Vpf = np.stack([self.inv_fourier_pushfwd(X_hat, Vk) for Vk in Vks])
+        m = np.tile(self.linsys_keep_mask, self.max_order + 2)
+        Vmat = Vpf.reshape(self.n_frames, -1).T[m] # (dims*N, n_frames)
+
+        coeffs, errs = [], []
+        for g in gens:
+            target = g.T.ravel()[m]
+            if ridge > 0:
+                reg = np.sqrt(ridge * np.linalg.norm(Vmat)**2 / self.n_frames)
+                A = np.vstack([Vmat, reg*np.eye(self.n_frames)])
+                b = np.concatenate([target, np.zeros(self.n_frames)])
+                c, *_ = np.linalg.lstsq(A, b, rcond=None)
+            else:
+                c, *_ = np.linalg.lstsq(Vmat, target, rcond=None)
+            coeffs.append(c)
+            errs.append(np.linalg.norm(Vmat @ c - target) / np.linalg.norm(target))
+        return np.array(coeffs), np.array(errs)
+
+    def principal_angles(self, V_ops, X_hat, gens):
+        V_recs = []
+        for V_op in V_ops:
+            V = self.inv_fourier_pushfwd(X_hat, V_op)
+            V_recs.append(V)
+
+        dims = X_hat.shape[0]
+        m = np.tile(self.linsys_keep_mask, dims)
+
+        R = np.stack([V[:dims].ravel()[m] for V in V_recs]).T
+        A_ = np.stack([g[:, :dims].T.ravel()[m] for g in gens]).T
+        R = R / np.linalg.norm(R, axis=0, keepdims=True)
+        A_ = A_ / np.linalg.norm(A_, axis=0, keepdims=True)
+
+        Qr, _ = np.linalg.qr(R)
+        Qa, _ = np.linalg.qr(A_)
+        s = np.linalg.svd(Qr.T @ Qa, compute_uv=False)
+        print('principal angles (deg):', np.round(np.degrees(np.arccos(np.clip(s, -1, 1))), 2))
+
+
+    ########################### Determining null-space problem ###########################
+
+    
+    def solve(self, Z_all, max_kernel_dim: int=6, svd_thres: float=None, plot_A_sv=False):
+        '''
+        Build and solve linear system with SVD for constant coefficients of V
+        '''
+        mask = self.linsys_keep_mask
         tiled_mask = np.tile(mask, self.max_order)
-        A = np.column_stack(cols)[tiled_mask]
-        C = np.column_stack(c_cols)[tiled_mask]
-        print(f'A norm: {np.linalg.norm(A)}, C norm: {np.linalg.norm(C)}')
+
+        ### BUILD LINEAR SYSTEM ###
+        print('')
+        print('##### BUILDING LINEAR SYSTEM #####')
+        A = self.build_columns(Z_all)[tiled_mask]
+        print(f'A norm: {np.linalg.norm(A)}')
 
         ### SOLVE ###
+        print('')
+        print('##### SOLVING LINEAR SYSTEM #####')
+        MACHINE_ZERO = 1e-12
+
+        # T, T_errs = self.trivial_subspace(Vks, WX, X_hat)
+        # A_def, P = self.deflate_trivial(A, T)
         _, S, Vt = np.linalg.svd(A, full_matrices=False)
-        sv_scaled = S / S[0]
-        # plt.semilogy(S/S[0], 'o-')
-        # plt.xlabel('index')
-        # plt.ylabel('Scaled singular values')
-        # plt.show()
+        sv = S / S[0]
+        valid = np.where(sv > MACHINE_ZERO)[0]
+        print(f'A_def rank {len(valid)} of {len(S)}')
+        print('lowest valid sv:', sv[valid[-max_kernel_dim-2:]])
+        params_set = [Vt[i] for i in valid[-max_kernel_dim:][::-1]]
+        if plot_A_sv:
+            plt.semilogy(S/S[0], 'o-')
+            plt.xlabel('index')
+            plt.ylabel('Scaled singular values')
+            plt.show()
 
-        # kernel analysis
-        MACHINE_ZERO = 1e-14
-        valid = np.where(sv_scaled > MACHINE_ZERO)[0]
-        A_rank = len(valid)
-        R = Vt[:A_rank].T
-        print(f'Low singular values of A: ', sv_scaled[valid[-max_kernel_dim:]])
-
-        A_proj = A @ R # (PxN, A_rank) 
-        C_proj = C @ R # (PxN, A_rank)
-        print(f'C rank: {np.linalg.matrix_rank(C_proj)}')
-
-        w, Z = sp.linalg.eigh(A_proj.T @ A_proj, C_proj.T @ C_proj + 1e-12*np.eye(A_rank))
-        alpha = R @ Z # back to full frame coordinates
-        print('AC generalised eigenvalues:', w[:16])
-        plt.semilogy(w, 'o-') 
-        plt.show()
-
-        param_set = []
-        for i in range(max_kernel_dim):
-            params = alpha[:, i]
-            V_op = sum(ck * Vk for ck, Vk in zip(params, Vks))
-            res = self.check_symmetry_residual(V_op, W_op, d)
-            print(f'eigenvalue {i}: {w[i]:.4e}, determining equation residual: {res}')
-            param_set.append(params)
-        return param_set, Vks
+        return params_set

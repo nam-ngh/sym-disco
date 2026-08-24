@@ -1,18 +1,18 @@
 data: 
-  n_trajectories: 729
-  t_steps: 64
+  n_trajectories: 400
+  t_steps: 60
 
   ##### generation configs, blind to solver #####
   seed: 42
-  x_min: 2.5
-  x_max: 6.0
+  x_min: 1.5
+  x_max: 3.0
   noise: 0.01
 
 gen_params:
-  A_min: 1.0
-  A_max: 5.0
-  B_min: -3.0
-  B_max: -0.5
+  A_min: 3.0
+  A_max: 8.0
+  B_min: -5.0
+  B_max: -1.0
   ##############################################
 
 solver:
@@ -24,7 +24,7 @@ solver:
   knn: 240
 
   # 0-laplacian spectral basis
-  M: 40
+  M: 50
 
   # 1-laplacian spectral frames
   frame_retain_thres: 1.0e-4
@@ -35,7 +35,12 @@ solver:
   plot_W_vec_scale: 0.1
 
   # linear system
+  verbose: True
+  sg_window: 10
+  chunkz: 50
   max_kernel_dim: 3
-  plot_kernel_dim: 0
+  plot_kernel_dim: 1
   plot_sym_vec_scale: 0.2 
-  plot_sym_subsample: 2000
+
+  plot_subsample: 2000
+  analytic_validation: True

@@ -35,9 +35,14 @@ solver:
   plot_W_vec_scale: 0.1 # overall vector scale
 
   # linear system
+  verbose: True # print Lie bracket diagnostics, rec True
+  sg_window: 11 # sav-golay window
+  chunkz: 50 # frames batch size for Lie bracket computation
+  analytic_validation: False # validate against known symmetries? Check if available from data/analytic_sym.py
+
   plot_kernel_dim: 1 # which symmetry field to plot, any int in [0 - max_kernel_dim)
   plot_sym_vec_scale: 0.2 # overall vector scale
-  plot_sym_subsample: 1000 # Number of points to sample from the manifold, reduce to increase clarity
+  plot_subsample: 2000 # Number of points to sample from the manifold, reduce to increase clarity
 
   ##### #####
   # Function calls in the main algorithm does allow for more configurability directly in code
