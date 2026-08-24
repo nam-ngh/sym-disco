@@ -35,7 +35,7 @@ solver:
   plot_W_vec_scale: 0.1
 
   # linear system
-  max_kernel_dim: 12
+  max_kernel_dim: 8
   plot_kernel_dim: 0
   plot_sym_vec_scale: 0.2 
   plot_sym_subsample: 2000

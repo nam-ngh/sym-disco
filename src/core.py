@@ -375,7 +375,7 @@ class SymSolver:
         L = (L + L.T) / 2.0
         B = (B + B.T) / 2.0
         print(f'Shape L: {L.shape}, Shape B: {B.shape}')
-        del G_hat_flat, E_hat_flat
+        del E_hat_flat
 
         nu, a = sp.linalg.eigh(L, B) # (n_frames,), (n_frames, n_frames)
         print(f'Shape nu: {nu.shape}, Shape a: {a.shape}')
@@ -384,6 +384,9 @@ class SymSolver:
 
         # coefficients for all basis eigen 1-forms
         frame_coeffs = U_tilde @ a # (P, n_frames)
+        Gram_forms = frame_coeffs.T @ G_hat_flat @ frame_coeffs
+        del G_hat_flat
+        print('rho orthonormal under G_hat?', np.abs(Gram_forms - np.eye(self.n_frames)).max())
         print(f'Eigen frame coefficients shape: {frame_coeffs.shape}')
         del L, B, U_tilde
 
@@ -513,10 +516,14 @@ class SymSolver:
         self.linsys_keep_mask = self.make_mask()
         phi = self.eigvecs.reshape(-1, self.t_size, self.M) # (n_t, t_size, M)
 
+        print('rows monotonic in x?', np.all(np.diff(x, axis=1) > 0))
+        print('row 0 x range:', x[0,0], x[0,-1])
+        print('all rows same x?', np.abs(x - x[0]).max())
+
         if sav_golay:
             dx = np.diff(x, axis=1).mean()
             dphi = savgol_filter(
-                phi, window_length=11, polyorder=3,
+                phi, window_length=7, polyorder=3,
                 deriv=1, delta=dx, axis=1
             ) # along t_size
         else:
@@ -565,6 +572,11 @@ class SymSolver:
         print('Wx all around 1?', Wx.mean(), Wx.std())
         print('Wu masked res around 0?', np.linalg.norm(res[mask]) / np.linalg.norm(ux[mask]))
         print('Wu all res around 0?', np.linalg.norm(res) / np.linalg.norm(ux))
+        if self.max_order > 1:
+            a1 = self.inv_fourier_pushfwd(u_hat, W_op).ravel()
+            a2 = self.inv_fourier_pushfwd(u_hat, W_op@W_op).ravel()
+            print('W(u) vs u1:', np.linalg.norm((a1-self.data[:,2])[mask])/np.linalg.norm(self.data[:,2][mask]))
+            print('W2(u) vs u2:', np.linalg.norm((a2-self.data[:,3])[mask])/np.linalg.norm(self.data[:,3][mask]))
 
     def check_frame_quality(self, W_op, Vks, x_hat, u_hats, mask):
         Vstack = np.column_stack([Vk.ravel() for Vk in Vks]) # (M*M, n_frames)
@@ -616,8 +628,8 @@ class SymSolver:
             rho_k = self.unflatten_antisym_1tensor(rho_k_flat, self.M, idx_i, idx_j) # (M, M)
             Vk = self.sharp(H, rho_k) # (M, M)
             Zk = self.lie_bracket(Vk, W_op)
-            Zkx = self.inv_fourier_pushfwd(x_hat, Zk)
-            Vkx = self.inv_fourier_pushfwd(x_hat, Vk)
+            Zkx = self.inv_fourier_pushfwd(x_hat, Zk).ravel()
+            Vkx = self.inv_fourier_pushfwd(x_hat, Vk).ravel()
             Vks.append(Vk)
 
             col_kps = []
@@ -625,14 +637,15 @@ class SymSolver:
             for p in range(1, self.max_order + 1):
                 # first term in colkp
                 u_pminus1_hat = u_hats[p-1]
-                Zku_pminus1 = self.inv_fourier_pushfwd(u_pminus1_hat, Zk)
-                Vku_pminus1 = self.inv_fourier_pushfwd(u_pminus1_hat, Vk)
+                Zku_pminus1 = self.inv_fourier_pushfwd(u_pminus1_hat, Zk).ravel()
+                Vku_pminus1 = self.inv_fourier_pushfwd(u_pminus1_hat, Vk).ravel()
                 # second term in colkp
-                u_p = self.data[:, 1+p]
-                col_kp = (Zku_pminus1 - u_p * Zkx).ravel() # (N,)
-                c_col_kp = (Vku_pminus1 - u_p * Vkx).ravel()
+                u_p = self.data[:, 1+p].ravel()
+                col_kp = Zku_pminus1 - u_p * Zkx # (N,)
+                c_col_kp = Vku_pminus1 - u_p * Vkx
                 col_kps.append(col_kp)
                 c_col_kps.append(c_col_kp)
+                assert col_kp.shape == (self.N,), col_kp.shape
 
             col_k = np.concatenate(col_kps) # (PxN,)
             cols.append(col_k)
