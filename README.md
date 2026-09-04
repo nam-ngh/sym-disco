@@ -1,4 +1,4 @@
-## Internal symmetry discovery algorithm for ordinary differential systems
+## Internal symmetry discovery algorithm
 
 Recovers internal symmetries from the point cloud of unknown ordinary differential systems by resolving the geometry of the equation manifold and imposing internal contact conditions.
 
