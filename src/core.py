@@ -56,7 +56,7 @@ class SymSolver:
                 D2 = pair_dist**2
                 print('Pairwise distance median: ', np.median(D2))
                 eps_grid = np.logspace(-5, 2, 40)
-                S = [np.exp(-D2/e).sum() for e in eps_grid]
+                S = [np.exp(-D2/4*e).sum() for e in eps_grid]
                 plt.loglog(eps_grid, S, 'o-')
                 plt.show()
             
@@ -295,9 +295,10 @@ class SymSolver:
             c1 = self.product_energy(c, 1)
             c2 = self.product_energy(c, 2)
         else:
-            Pij = (self.eigvecs[:, :, None] * self.eigvecs[:, None, :]).reshape(self.N, -1)
-            LP  = (d[:, None] * Pij - K_hat @ Pij) / self.eps # = Lsym @ Pij
-            LgP = LP / d[:, None] # = Lg @ Pij
+            # outer product of eigenvectors MxM at each N:
+            Pij = (self.eigvecs[:, :, None] * self.eigvecs[:, None, :]).reshape(self.N, -1) # (N, M^2)
+            LP  = (d[:, None] * Pij - K_hat @ Pij) / self.eps # = L @ Pij
+            LgP = LP / d[:, None] # = Lrw @ Pij
 
             c0 = (Pij.T @ (d[:, None] * Pij)).reshape(M,M,M,M)
             c1  = (Pij.T @ LP).reshape(M,M,M,M)
@@ -501,7 +502,7 @@ class SymSolver:
         '''
         Convert 1-form to vector: (M, M) -> (M, M)
         '''
-        return np.einsum('ijkl,ij->kl', H, form_coeff / 2.0)
+        return np.einsum('ijkl,ij->kl', H, form_coeff / 1.0)
 
 
     ########################### Linear system setup methods ###########################
@@ -584,7 +585,7 @@ class SymSolver:
         WX_hat = self.fourier_tf(WX.T, d) # (dims, M)
         VW = self.inv_fourier_pushfwd(WX_hat, V_op) # (dims, N)
 
-        # term 2: W(V^a) V's components, differentiated along trajectories
+        # term 2: W(VX) V's components, differentiated along trajectories
         VX = self.inv_fourier_pushfwd(X_hat, V_op) # (max_order + 2, N)
         WV = self.df_dx(VX, sg_win, sg_poly)[:dims] # (dims, N)
         return VW - WV
