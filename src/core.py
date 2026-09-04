@@ -56,8 +56,13 @@ class SymSolver:
                 D2 = pair_dist**2
                 print('Pairwise distance median: ', np.median(D2))
                 eps_grid = np.logspace(-5, 2, 40)
-                S = [np.exp(-D2/4*e).sum() for e in eps_grid]
-                plt.loglog(eps_grid, S, 'o-')
+                S = [np.exp(-D2/(4*e)).sum() for e in eps_grid]
+                fig, ax = plt.subplots(figsize=(9, 8))
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+                ax.loglog(eps_grid, S, 'o-', ms=3, color='lightgreen', mfc='white', lw=0.8)
+                ax.set_xlabel(r'$\varepsilon$')
+                ax.set_ylabel(r'$S(\varepsilon)$')
                 plt.show()
             
             # kernel matrix K 
@@ -91,8 +96,13 @@ class SymSolver:
                 D2 = dist**2
                 print('kNN distance median: ', np.median(D2))
                 eps_grid = np.logspace(-5, 2, 40)
-                S = [np.exp(-D2/e).sum() for e in eps_grid]
-                plt.loglog(eps_grid, S, 'o-')
+                S = [np.exp(-D2/(4*e)).sum() for e in eps_grid]
+                fig, ax = plt.subplots(figsize=(9, 8))
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+                ax.loglog(eps_grid, S, 'o-', ms=3, color='lightgreen', mfc='white', lw=0.8)
+                ax.set_xlabel(r'$\varepsilon$')
+                ax.set_ylabel(r'$S(\varepsilon)$')
                 plt.show()
             print('max kNN radius:', dist.max(), ' 3*sqrt(4*eps):', 3*np.sqrt(4*epsilon))
 
@@ -441,7 +451,7 @@ class SymSolver:
         plt.show()
         
     def plot_vector_field(self, V, normalise=75, scale=1.0, x_scale=1.0, subsample: int=None, title: str=''):
-        fig = plt.figure(figsize=(7, 6))
+        fig = plt.figure(figsize=(8, 6))
         ax = fig.add_subplot(111, projection='3d')
 
         if type(normalise) == int:
@@ -762,14 +772,18 @@ class SymSolver:
         # A_def, P = self.deflate_trivial(A, T)
         _, S, Vt = np.linalg.svd(A, full_matrices=False)
         sv = S / S[0]
-        valid = np.where(sv > MACHINE_ZERO)[0]
+        valid = np.where(sv < MACHINE_ZERO)[0]
         print(f'A_def rank {len(valid)} of {len(S)}')
         print('lowest valid sv:', sv[valid[-max_kernel_dim-2:]])
-        params_set = [Vt[i] for i in valid[-max_kernel_dim:][::-1]]
+        params_set = [Vt[i] for i in valid[:max_kernel_dim][::-1]]
         if plot_A_sv:
-            plt.semilogy(S/S[0], 'o-')
-            plt.xlabel('index')
-            plt.ylabel('Scaled singular values')
+            fig, ax = plt.subplots(figsize=(9, 8))
+            ax.semilogy(S/S[0], 'o-', ms=3, color='navy', mfc='white', lw=0.8)
+            ax.set_xlabel('Index')
+            ax.set_ylabel('Scaled singular values')
+            ax.axhline(1e-12, ls=':', lw=0.8, color='coral')
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
             plt.show()
 
         return params_set

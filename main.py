@@ -128,13 +128,13 @@ def main(
             solver.principal_angles(sym_ops, X_hat, an_gens)
               
         # symmetries can be any linear combinations of sym_ops, plot
-        for V_op in sym_ops:
+        for i, V_op in enumerate(sym_ops):
             V = solver.inv_fourier_pushfwd(X_hat, V_op)
             solver.plot_vector_field(
                 V, scale=run_cf['plot_sym_vec_scale'], 
                 subsample=run_cf['plot_subsample'],
                 normalise='norm',
-                title='Internal Symmetry'
+                title=f'Internal Symmetry {i}'
             )
 
 if __name__ == "__main__":

@@ -28,7 +28,7 @@ solver:
   # 1-laplacian spectral frames
   frame_retain_thres: 1.0e-4
   plot_frame_no: 36
-  plot_frame_vec_scale: 0.1
+  plot_frame_vec_scale: 0.15
 
   # contact form kernel vector field
   plot_W_vec_scale: 0.1
@@ -38,3 +38,10 @@ solver:
   plot_kernel_dim: 0
   plot_sym_vec_scale: 0.2 
   plot_sym_subsample: 1000
+
+  verbose: True
+  sg_window: 10
+  chunkz: 50
+
+  plot_subsample: 3000
+  analytic_validation: False
